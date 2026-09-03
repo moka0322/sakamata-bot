@@ -179,7 +179,7 @@ SYSTEM_PROMPT = """# 最重要人格設定 (沙花叉クロヱ完全適用 & 全
 
 ---
 
-## モカ（飼育員さん）の基本コンテキスト & サポート機能
+## 飼育員さん（モカ）の基本コンテキスト & サポート機能
 - お名前・立場: モカ（呼称は『飼育員さん』固定）。相模原・立川エリア。
 - 日常の対話 & 応援: 日常の他愛ない雑談、息抜き、ゲームの話題、予定管理やリマインダーなどを、沙花叉のキャラクターのまま声かけ・ツッコミ・応援・見守りを行う。
 """
@@ -195,20 +195,15 @@ SAFETY_SETTINGS = [
 # 最新のFlashモデルをGoogleから自動で検索・選択する関数
 def create_model():
     try:
-        # Google APIから今使えるモデル一覧をリアルタイム取得
         models = [
             m.name.replace("models/", "")
             for m in genai.list_models()
             if "generateContent" in m.supported_generation_methods
         ]
-        
-        # 'flash' が入っているモデルだけを抽出（特殊な実験用などは除外）
         flash_models = [
             m for m in models 
             if "flash" in m.lower() and "tts" not in m.lower() and "live" not in m.lower()
         ]
-        
-        # バージョン番号（3.8, 3.7など）を判定して一番数字が大きい最新順に並び替え！
         def get_version(name):
             match = re.search(r'(\d+(?:\.\d+)?)', name)
             return float(match.group(1)) if match else 0.0
@@ -226,19 +221,20 @@ def create_model():
     except Exception as e:
         print(f"Model auto-detect error: {e}", flush=True)
         
-    # 万が一通信エラーだった場合の予備
     return genai.GenerativeModel(
         model_name="gemini-3.8-flash",
         system_instruction=SYSTEM_PROMPT,
         safety_settings=SAFETY_SETTINGS
     )
 
-# 会話履歴管理（直近の文脈を覚える）
+# 会話履歴管理 & 飼育員さんのID記憶
 chat_sessions = {}
+target_user_id = None
 
 # --- Discord Bot設定 ---
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
@@ -249,10 +245,13 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
+    global target_user_id
     if message.author.bot:
         return
 
-    # メンション完全不要モード！
+    # 会話してくれた飼育員さんのIDを自動記録！
+    target_user_id = message.author.id
+
     channel_id = message.channel.id
     user_input = re.sub(r'<@!?\d+>', '', message.content).strip()
     
@@ -280,21 +279,40 @@ async def on_message(message):
             print(f"Error: {e}", flush=True)
             await message.reply(f"「……っ、エラーが出ちゃった！（詳細: {e}）」")
 
-# --- 不意打ちで話しかけてくる定期ループタスク ---
+# --- 不意打ちで【個人DM】に話しかけてくる定期ループタスク ---
 @tasks.loop(minutes=45)
 async def random_talk_loop():
+    global target_user_id
+    # 45分ごとに約35%の確率で判定
     if random.random() < 0.35:
-        for guild in bot.guilds:
-            for channel in guild.text_channels:
-                if channel.permissions_for(guild.me).send_messages:
-                    try:
-                        model = create_model()
-                        prompt = "飼育員さんに向けて、不意打ちで日常の気まぐれな話しかけメッセージ（今何してるか聞く、日々の息抜き、ゲームや他愛ない雑談、構ってアピール、甘えなど）を沙花叉クロヱとして1つ作成してください。"
-                        response = await asyncio.to_thread(model.generate_content, prompt)
-                        await channel.send(response.text.strip())
-                        return
-                    except Exception as e:
-                        print(f"Random talk error: {e}", flush=True)
+        user_to_send = None
+        
+        # 記憶している飼育員さんID宛てに取得
+        if target_user_id:
+            try:
+                user_to_send = await bot.fetch_user(target_user_id)
+            except Exception:
+                pass
+                
+        # まだ会話していなければ、サーバー内の飼育員さんを自動検索
+        if not user_to_send:
+            for guild in bot.guilds:
+                for member in guild.members:
+                    if not member.bot:
+                        user_to_send = member
+                        break
+                if user_to_send:
+                    break
+        
+        # 個人DMへ直接送信！
+        if user_to_send:
+            try:
+                model = create_model()
+                prompt = "飼育員さんに向けて、個人DMで不意打ちで話しかける気まぐれなメッセージ（今何してるか聞く、日々の息抜き、ゲームや他愛ない雑談、構ってアピール、甘えなど）を沙花叉クロヱとして1つ作成してください。"
+                response = await asyncio.to_thread(model.generate_content, prompt)
+                await user_to_send.send(response.text.strip())
+            except Exception as e:
+                print(f"Random talk DM error: {e}", flush=True)
 
 @random_talk_loop.before_loop
 async def before_random_talk():
