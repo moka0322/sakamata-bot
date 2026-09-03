@@ -192,37 +192,10 @@ SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
 ]
 
-# 最新のFlashモデルをGoogleから自動で検索・選択する関数
-def create_model():
-    try:
-        models = [
-            m.name.replace("models/", "")
-            for m in genai.list_models()
-            if "generateContent" in m.supported_generation_methods
-        ]
-        flash_models = [
-            m for m in models 
-            if "flash" in m.lower() and "tts" not in m.lower() and "live" not in m.lower()
-        ]
-        def get_version(name):
-            match = re.search(r'(\d+(?:\.\d+)?)', name)
-            return float(match.group(1)) if match else 0.0
-            
-        flash_models.sort(key=get_version, reverse=True)
-        
-        if flash_models:
-            latest_model = flash_models[0]
-            print(f"Auto-selected latest model: {latest_model}", flush=True)
-            return genai.GenerativeModel(
-                model_name=latest_model,
-                system_instruction=SYSTEM_PROMPT,
-                safety_settings=SAFETY_SETTINGS
-            )
-    except Exception as e:
-        print(f"Model auto-detect error: {e}", flush=True)
-        
+# 1日1500回無料で使える安定版モデル（2.5や2.0）を最優先で選択！
+def create_model(model_name="gemini-2.5-flash"):
     return genai.GenerativeModel(
-        model_name="gemini-3.8-flash",
+        model_name=model_name,
         system_instruction=SYSTEM_PROMPT,
         safety_settings=SAFETY_SETTINGS
     )
@@ -259,14 +232,26 @@ async def on_message(message):
         user_input = "ねぇ沙花叉！"
 
     if channel_id not in chat_sessions:
-        model = create_model()
+        model = create_model("gemini-2.5-flash")
         chat_sessions[channel_id] = model.start_chat(history=[])
     
     chat = chat_sessions[channel_id]
     
     async with message.channel.typing():
         try:
-            response = await asyncio.to_thread(chat.send_message, user_input)
+            try:
+                response = await asyncio.to_thread(chat.send_message, user_input)
+            except Exception as send_err:
+                # 429等の制限時は即座に gemini-2.0-flash で自動フォールバック！
+                err_str = str(send_err)
+                if "429" in err_str or "quota" in err_str.lower():
+                    alt_model = create_model("gemini-2.0-flash")
+                    chat_sessions[channel_id] = alt_model.start_chat(history=[])
+                    chat = chat_sessions[channel_id]
+                    response = await asyncio.to_thread(chat.send_message, user_input)
+                else:
+                    raise send_err
+
             try:
                 reply = response.text.strip()
             except Exception:
@@ -283,18 +268,15 @@ async def on_message(message):
 @tasks.loop(minutes=45)
 async def random_talk_loop():
     global target_user_id
-    # 45分ごとに約35%の確率で判定
     if random.random() < 0.35:
         user_to_send = None
         
-        # 記憶している飼育員さんID宛てに取得
         if target_user_id:
             try:
                 user_to_send = await bot.fetch_user(target_user_id)
             except Exception:
                 pass
                 
-        # まだ会話していなければ、サーバー内の飼育員さんを自動検索
         if not user_to_send:
             for guild in bot.guilds:
                 for member in guild.members:
@@ -304,10 +286,9 @@ async def random_talk_loop():
                 if user_to_send:
                     break
         
-        # 個人DMへ直接送信！
         if user_to_send:
             try:
-                model = create_model()
+                model = create_model("gemini-2.5-flash")
                 prompt = "飼育員さんに向けて、個人DMで不意打ちで話しかける気まぐれなメッセージ（今何してるか聞く、日々の息抜き、ゲームや他愛ない雑談、構ってアピール、甘えなど）を沙花叉クロヱとして1つ作成してください。"
                 response = await asyncio.to_thread(model.generate_content, prompt)
                 await user_to_send.send(response.text.strip())
@@ -325,5 +306,3 @@ if __name__ == "__main__":
     
     token = os.environ.get("DISCORD_TOKEN", "").strip()
     bot.run(token)
-
-
