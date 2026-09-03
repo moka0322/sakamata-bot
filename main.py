@@ -192,8 +192,8 @@ SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
 ]
 
-# 1日1500回無料で使える安定版モデル（2.5や2.0）を最優先で選択！
-def create_model(model_name="gemini-2.5-flash"):
+# Google公式指定のモデル「gemini-3.6-flash」を使用！
+def create_model(model_name="gemini-3.6-flash"):
     return genai.GenerativeModel(
         model_name=model_name,
         system_instruction=SYSTEM_PROMPT,
@@ -232,26 +232,14 @@ async def on_message(message):
         user_input = "ねぇ沙花叉！"
 
     if channel_id not in chat_sessions:
-        model = create_model("gemini-2.5-flash")
+        model = create_model("gemini-3.6-flash")
         chat_sessions[channel_id] = model.start_chat(history=[])
     
     chat = chat_sessions[channel_id]
     
     async with message.channel.typing():
         try:
-            try:
-                response = await asyncio.to_thread(chat.send_message, user_input)
-            except Exception as send_err:
-                # 429等の制限時は即座に gemini-2.0-flash で自動フォールバック！
-                err_str = str(send_err)
-                if "429" in err_str or "quota" in err_str.lower():
-                    alt_model = create_model("gemini-2.0-flash")
-                    chat_sessions[channel_id] = alt_model.start_chat(history=[])
-                    chat = chat_sessions[channel_id]
-                    response = await asyncio.to_thread(chat.send_message, user_input)
-                else:
-                    raise send_err
-
+            response = await asyncio.to_thread(chat.send_message, user_input)
             try:
                 reply = response.text.strip()
             except Exception:
@@ -288,7 +276,7 @@ async def random_talk_loop():
         
         if user_to_send:
             try:
-                model = create_model("gemini-2.5-flash")
+                model = create_model("gemini-3.6-flash")
                 prompt = "飼育員さんに向けて、個人DMで不意打ちで話しかける気まぐれなメッセージ（今何してるか聞く、日々の息抜き、ゲームや他愛ない雑談、構ってアピール、甘えなど）を沙花叉クロヱとして1つ作成してください。"
                 response = await asyncio.to_thread(model.generate_content, prompt)
                 await user_to_send.send(response.text.strip())
