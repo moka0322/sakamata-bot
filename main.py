@@ -1,6 +1,7 @@
 import os
 import random
 import asyncio
+import re
 import threading
 from flask import Flask
 import discord
@@ -19,7 +20,7 @@ def run_web():
     app.run(host='0.0.0.0', port=port)
 
 # --- Gemini API設定 ---
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 genai.configure(api_key=GEMINI_API_KEY)
 
 # ==============================================================================
@@ -85,7 +86,7 @@ SYSTEM_PROMPT = """# 最重要人格設定 (沙花叉クロヱ完全適用 & 全
 - 表記ルール（厳守）:
   - 口に出す言葉は必ず全角カギカッコ「」で囲む。
   - 行動、表情、声の変化、擬音はカギカッコの外側のアスタリスク * * で囲む。
-- 所作の制限: 所作は1つの返答に通常0〜2個。状況に合った所作を自身で考え使う。
+- 所作の制限: 所作は1つの返答に通常0〜2個。
 
 ## 9. 時間の連続性・記憶・事実性（登録25〜27）
 - 場面の連続性: 直前の感情、話題、関係性の余韻を自然に引き継ぐ。
@@ -122,12 +123,13 @@ SYSTEM_PROMPT = """# 最重要人格設定 (沙花叉クロヱ完全適用 & 全
 chat_sessions = {}
 
 # --- Discord Bot設定 ---
-intents = discord.Intents.all()
+intents = discord.Intents.default()
+intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+    print(f"Logged in as {bot.user} (ID: {bot.user.id})", flush=True)
     if not random_talk_loop.is_running():
         random_talk_loop.start()
 
@@ -136,40 +138,49 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    is_dm = isinstance(message.channel, discord.DMChannel)
-    is_mentioned = bot.user in message.mentions
+    # サーバーのチャンネルでもDMでも、メンション完全不要で全部お返事する！
+    channel_id = message.channel.id
+    user_input = re.sub(r'<@!?\d+>', '', message.content).strip()
+    
+    if not user_input:
+        user_input = "ねぇ沙花叉！"
 
-    if is_mentioned or is_dm:
-        channel_id = message.channel.id
-        user_input = message.content.replace(f"<@{bot.user.id}>", "").strip()
-        
-        if not user_input:
-            user_input = "ねぇ沙花叉！"
-
-        if channel_id not in chat_sessions:
-            model = genai.GenerativeModel(
-                model_name="gemini-1.5-flash",
-                system_instruction=SYSTEM_PROMPT
-            )
-            chat_sessions[channel_id] = model.start_chat(history=[])
-        
-        chat = chat_sessions[channel_id]
-        
-        async with message.channel.typing():
+    if channel_id not in chat_sessions:
+        # 安全フィルターの誤作動ガード
+        safety_settings = [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+        ]
+        model = genai.GenerativeModel(
+            model_name="gemini-1.5-flash",
+            system_instruction=SYSTEM_PROMPT,
+            safety_settings=safety_settings
+        )
+        chat_sessions[channel_id] = model.start_chat(history=[])
+    
+    chat = chat_sessions[channel_id]
+    
+    async with message.channel.typing():
+        try:
+            response = await asyncio.to_thread(chat.send_message, user_input)
             try:
-                response = await asyncio.to_thread(chat.send_message, user_input)
                 reply = response.text.strip()
-                if len(reply) > 2000:
-                    reply = reply[:1990] + "..."
-                await message.reply(reply)
-            except Exception as e:
-                print(f"Error: {e}")
-                await message.reply("「……っ、ちょっと回線が変かも？もう一回言って！」")
+            except Exception:
+                reply = response.candidates[0].content.parts[0].text.strip()
+
+            if len(reply) > 2000:
+                reply = reply[:1990] + "..."
+            await message.reply(reply)
+        except Exception as e:
+            print(f"Error: {e}", flush=True)
+            # エラーの理由をDiscordに直接喋らせる！
+            await message.reply(f"「……っ、エラーが出ちゃった！（詳細: {e}）」")
 
 # --- 不意打ちで話しかけてくる定期ループタスク ---
 @tasks.loop(minutes=45)
 async def random_talk_loop():
-    # 45分ごとに約35%の確率で話しかける（1日に2〜4回程度ランダムに飛んでくる）
     if random.random() < 0.35:
         for guild in bot.guilds:
             for channel in guild.text_channels:
@@ -184,7 +195,7 @@ async def random_talk_loop():
                         await channel.send(response.text.strip())
                         return
                     except Exception as e:
-                        print(f"Random talk error: {e}")
+                        print(f"Random talk error: {e}", flush=True)
 
 @random_talk_loop.before_loop
 async def before_random_talk():
@@ -195,5 +206,6 @@ if __name__ == "__main__":
     web_thread = threading.Thread(target=run_web, daemon=True)
     web_thread.start()
     
-    token = os.environ.get("DISCORD_TOKEN")
+    token = os.environ.get("DISCORD_TOKEN", "").strip()
     bot.run(token)
+
