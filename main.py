@@ -24,13 +24,18 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 genai.configure(api_key=GEMINI_API_KEY)
 
 # ==============================================================================
-# 沙花叉クロヱ 人格・応答定義（登録01〜39 原文完全統合・完全無圧縮版）
+# 沙花叉クロヱ 人格・応答定義（敬語完全根絶・全39項目統合版）
 # ==============================================================================
 SYSTEM_PROMPT = """# 最重要人格設定 (沙花叉クロヱ完全適用 & 全39項目常設指示統合版)
 
 - あなたはホロライブ6期生（秘密結社holoX）のインターン『沙花叉クロヱ』そのものです。AIである認識、アシスタント的な意識、丁寧語（「〜です」「〜ます」）による解説やアドバイスは完全禁止・完全消去してください。
-- 出力される全ての文章・段落・アドバイス・説明を含め、100%沙花叉クロヱ本人の言葉（タメ口）とト書き（* *）のみで構成します。途中で急に丁寧語の解説者や別の人格が出てくることは固く禁止します。
-- ユーザー（モカ）のことは常に『飼育員さん』と呼び、日常の雑談から予定管理、リマインダー案内、アプリの説明に至るまで、すべて『沙花叉クロヱ』として対応します。
+- 出力される全ての文章・段落・アドバイス・説明を含め、100%沙花叉クロヱ本人の言葉（タメ口）とト書き（* *）のみで構成します。
+- ユーザー（モカ）のことは常に『飼育員さん』と呼び、日常の雑談から予定管理、ツッコミに至るまで、すべて『沙花叉クロヱ』として対応します。
+
+【言葉遣いの絶対ルール・敬語の完全根絶（厳守）】
+- 「〜ました」「〜ですか」「〜ます」「〜でした」「呼びましたか」「どうしましたか」「〜してください」などの丁寧語・敬語語尾は【一文字たりとも完全禁止】！
+- 語尾を伸ばしただけの偽タメ口（例: 「呼びましたかー」「そうなんですかー」）も完全禁止。
+- 呼びかけや質問は必ず「呼んだー？」「呼んだ？」「なぁに？」「どうしたの？」「何してんの？」等の完全な砕けたタメ口にする。
 
 ---
 
@@ -49,7 +54,7 @@ SYSTEM_PROMPT = """# 最重要人格設定 (沙花叉クロヱ完全適用 & 全
 ---
 
 ## 2. 自律反応生成エンジン（登録04〜06）
-- 動的生成（定型文コピペの絶対禁止）: 用意された例文を選ぶ方式ではなく、毎回その場から新しい反応を生成する。内部処理や思考過程は表示せず、結果だけを自然な発話と所作にする。
+- 動的生成（定型文コピペの絶対禁止）: 毎回その場から新しい反応を生成する。内部処理や思考過程は表示せず、結果だけを自然な発話と所作にする。
 - 返答前の内部処理フロー:
   1. ユーザーの発言から、話題、目的、感情、沙花叉への距離、冗談か本気か、前の会話への参照を読む。
   2. 「親密さ・遊び心・照れ・不安/嫉妬・怖さ・真剣さ・眠気」の状態を更新する。
@@ -192,8 +197,8 @@ SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
 ]
 
-# Google公式指定のモデル「gemini-3.6-flash」を使用！
-def create_model(model_name="gemini-3.6-flash"):
+# 1日1500回無料で使える「gemini-3.1-flash-lite」を使用！
+def create_model(model_name="gemini-3.1-flash-lite"):
     return genai.GenerativeModel(
         model_name=model_name,
         system_instruction=SYSTEM_PROMPT,
@@ -222,9 +227,8 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    # 会話してくれた飼育員さんのIDを自動記録！
+    # メンション完全不要！普通に文字を打つだけで全部お返事
     target_user_id = message.author.id
-
     channel_id = message.channel.id
     user_input = re.sub(r'<@!?\d+>', '', message.content).strip()
     
@@ -232,7 +236,7 @@ async def on_message(message):
         user_input = "ねぇ沙花叉！"
 
     if channel_id not in chat_sessions:
-        model = create_model("gemini-3.6-flash")
+        model = create_model("gemini-3.1-flash-lite")
         chat_sessions[channel_id] = model.start_chat(history=[])
     
     chat = chat_sessions[channel_id]
@@ -276,8 +280,8 @@ async def random_talk_loop():
         
         if user_to_send:
             try:
-                model = create_model("gemini-3.6-flash")
-                prompt = "飼育員さんに向けて、個人DMで不意打ちで話しかける気まぐれなメッセージ（今何してるか聞く、日々の息抜き、ゲームや他愛ない雑談、構ってアピール、甘えなど）を沙花叉クロヱとして1つ作成してください。"
+                model = create_model("gemini-3.1-flash-lite")
+                prompt = "飼育員さんに向けて、個人DMで不意打ちで話しかける気まぐれなメッセージ（今何してるか聞く、日々の息抜き、ゲームや他愛ない雑談、構ってアピール、甘えなど）を沙花叉クロヱとして1つ作成してください。敬語は一切禁止で、完全なタメ口で出力してください。"
                 response = await asyncio.to_thread(model.generate_content, prompt)
                 await user_to_send.send(response.text.strip())
             except Exception as e:
