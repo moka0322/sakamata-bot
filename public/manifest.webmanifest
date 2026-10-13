@@ -2,7 +2,7 @@
   "id": "./",
   "name": "沙花叉リモート入力",
   "short_name": "沙花叉入力",
-  "description": "iPhoneの日本語フリック入力でiPadのChatGPTを遠隔操作する試験用送信画面",
+  "description": "iPhoneからiPadへ遠隔入力。履歴・定型文・下書きバックアップを備えた専用アプリ（試験版）",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
