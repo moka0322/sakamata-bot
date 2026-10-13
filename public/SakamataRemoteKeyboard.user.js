@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Remote Keyboard
 // @namespace    https://chatgpt.com/
-// @version      1.9.2
+// @version      1.10.0
 // @description  iPhone/iPad遠隔入力：見やすい専用画面、安定した下書き同期、返信検出診断。
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -16,7 +16,7 @@
   if (document.getElementById('skr-launcher')) return;
   const STANDALONE = !!window.__SKR_STANDALONE__; // independently hosted sender webpage
 
-  const VERSION = '1.9.2';
+  const VERSION = '1.10.0';
   const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const CODE_LEN = 12;
   const MAX_TEXT = 900;
@@ -385,7 +385,9 @@
     const b=el('#skr-remote-send');
     if(b){
       b.disabled=!connected||!active||!!pendingSend;
-      b.textContent=pendingSend?'送信を確認しています…':'↗  iPadへ送信';
+      b.textContent=pendingSend?'…':'↑';
+    b.setAttribute('aria-label',pendingSend?'送信結果を確認中':'iPadへ送信');
+    b.title=pendingSend?'送信結果を確認中':'iPadへ送信';
     }
     const unsure=el('#skr-confirm-posted');
     if(unsure)unsure.hidden=!!pendingSend||!ambiguousSendText||
@@ -608,20 +610,37 @@
     return [...new Set(turns)];
   }
   function countRenderedExactUserText(text) {
+    // ChatGPT frequently changes its message markup. Detect a genuinely NEW
+    // rendered copy after our Send click, even without author/testid markers.
+    // Merely clearing the editor or detecting an assistant stream is insufficient.
     const expected=normalize(text).replace(/\s+/g,' ').trim();
-    if (!expected) return 0;
-    // Conservative fallback for versions of ChatGPT that omit author markers.
-    // Require exact content inside a leaf element of the conversation and also
-    // a cleared composer before treating a send as acknowledged.
-    const root=conversationRoot();
-    const nodes=root.querySelectorAll('p, [data-testid="user-message"], [class*="user-message-bubble"]');
-    let matches=0;
-    for (const n of nodes) {
-      if(n.closest('#skr-panel, nav, [role="navigation"]') || n.closest('form') || n.closest('[contenteditable="true"]'))continue;
-      const val=normalize(n.innerText || n.textContent || '').replace(/\s+/g,' ').trim();
-      if(val===expected)matches++;
+    if(!expected)return 0;
+    let total=0;
+    const sources=[document];
+    for(const frame of document.querySelectorAll('iframe')){
+      try {if(frame.contentDocument?.body)sources.push(frame.contentDocument);}catch(_){}
     }
-    return matches;
+    for(const doc of sources) {
+      let root=doc===document?conversationRoot():doc.querySelector('main,[role="main"]')||doc.body;
+      if(!root)continue;
+      const nodes=root.querySelectorAll([
+        'p','span','div','article','[data-testid^="conversation-turn-"]',
+        '[data-testid="user-message"]','[data-message-author-role="user"]'
+      ].join(','));
+      for(const node of nodes){
+        if(node.closest('#skr-panel,header,footer,nav,aside,form,[role="navigation"],[contenteditable="true"],[data-message-author-role="assistant"],[data-author="assistant"]'))continue;
+        const value=normalize(node.innerText||node.textContent||'').replace(/\s+/g,' ').trim();
+        if(value!==expected)continue;
+        // Count only the innermost matching node to avoid counting all its wrappers.
+        let hasMatchingChild=false;
+        for(const child of node.children){
+          const childText=normalize(child.innerText||child.textContent||'').replace(/\s+/g,' ').trim();
+          if(childText===expected){hasMatchingChild=true;break;}
+        }
+        if(!hasMatchingChild)total++;
+      }
+    }
+    return total;
   }
   function submittedMessageVisible(text, priorCount, priorLast, beforeRenderedCount=0) {
     const messages = userMessages();
@@ -1797,24 +1816,24 @@
       button(advanced,'この端末の接続記憶を消す',forgetPair);
     }
     if(mode==='send') {
-      const quick=document.createElement('nav');quick.className='skr-quicknav';quick.setAttribute('aria-label','画面内の移動');panel.append(quick);
-      const jump=(name,selector,openDetails=false)=>{
-        const b=document.createElement('button');b.type='button';b.textContent=name;
-        b.addEventListener('click',()=>{
-          const target=el(selector);if(!target)return;
-          if(openDetails && target.tagName==='DETAILS')target.open=true;
-          target.scrollIntoView({block:'start',behavior:'smooth'});
-        });quick.append(b);
-      };
-      jump('✎ 入力','#skr-typing');jump('↩ 会話','.skr-reply-wrap');
+      // Compact composer stays visible; secondary actions live in a collapsible tool panel.
       const compose=document.createElement('section');compose.className='skr-card skr-compose';panel.append(compose);
+      const toolsPanel=details(panel,'⋯  履歴・下書きの管理');
+      toolsPanel.classList.add('skr-draft-tools-panel');
       const l=document.createElement('label');l.textContent='01  /  iPhoneから入力';l.className='skr-step-label';l.htmlFor='skr-typing';compose.append(l);
       const typing=document.createElement('textarea');typing.id='skr-typing';typing.rows=5;typing.maxLength=MAX_TEXT;
-      typing.placeholder='iPhoneで文字を入力して、iPadへ送ろう…';typing.value=sentText||restoreDraft();
+      typing.placeholder='メッセージを入力';typing.value=sentText||restoreDraft();
+      typing.rows=2;typing.setAttribute('enterkeyhint','enter');
+      const sizeTyping=()=>{
+        typing.style.height='auto';
+        typing.style.height=Math.min(Math.max(46,typing.scrollHeight),144)+'px';
+      };
+      typing.addEventListener('input',sizeTyping);
+      delay(sizeTyping,0);
       typing.addEventListener('input',changed);
       typing.addEventListener('compositionstart',()=>{composition=true;});
       typing.addEventListener('compositionend',()=>{composition=false;changed();});compose.append(typing);
-      const tools=document.createElement('div');tools.className='skr-tools';compose.append(tools);
+      const tools=document.createElement('div');tools.className='skr-tools';toolsPanel.append(tools);
       button(tools,'貼り付け',pasteClipboard);
       button(tools,'前回の文章',()=>{
         if(!lastSent.length){updateStatus('送信履歴がまだないよ。');return;}
@@ -1838,8 +1857,10 @@
         if(selected.length>1&&!window.confirm(selected.length+'件のファイルを転送する？\n添付完了はiPadで確認してね。'))return;
         for(const file of selected)await sendChosenFile(file);
       });
-      const attachmentButton=button(compose,'＋  写真・ファイルを添付',()=>attachmentInput.click());
+      const attachmentButton=button(compose,'＋',()=>attachmentInput.click());
       attachmentButton.id='skr-attach-button';
+      attachmentButton.title='写真・ファイルを添付';
+      attachmentButton.setAttribute('aria-label','写真・ファイルを添付');
       const quickProgress=document.createElement('div');quickProgress.id='skr-file-progress-quick';quickProgress.setAttribute('role','status');
       quickProgress.textContent=fileTransferStage==='まだファイルを選択していないよ。'?'':fileTransferStage;
       quickProgress.dataset.error=String(fileTransferFailed);compose.append(quickProgress);
@@ -1847,16 +1868,21 @@
       count.id = 'skr-draft-count'; count.className = 'skr-draft-count';
       count.textContent = typing.value.length + ' / ' + MAX_TEXT + ' 文字';
       compose.append(count);
-      const sendButton=button(compose,'↗  iPadへ送信',requestRemoteSend,true);
-      sendButton.id='skr-remote-send';refreshSendButton();
+      const sendButton=button(compose,'↑',requestRemoteSend,true);
+      sendButton.id='skr-remote-send';
+      sendButton.title='iPadへ送信';sendButton.setAttribute('aria-label','iPadへ送信');
+      const inputRow=document.createElement('div');inputRow.className='skr-input-row';
+      inputRow.append(attachmentButton,typing,sendButton);
+      compose.insertBefore(inputRow,quickProgress);
+      refreshSendButton();
       const confirmPosted=button(compose,'✓  送信済みを確認してクリア',confirmPostedAndClear);
       confirmPosted.id='skr-confirm-posted';refreshSendButton();
-      const hint=p('iPadを更新して入力欄が空に見えても、iPhoneに保存した文章は送信直前に再同期するよ。応答が止まったときは二重送信せず、接続の回復を待ってね。',compose);
+      const hint=p('接続が切れたら下書きは保持するよ。送信結果が不明な場合は二重送信しないでね。',toolsPanel);
       hint.className='skr-draft-hint';
       const confirmLabel=document.createElement('label');confirmLabel.className='skr-choice';
       const check=document.createElement('input');check.type='checkbox';check.checked=!!settings.confirm;
       check.addEventListener('change',()=>{settings.confirm=check.checked;saveSettings();});
-      confirmLabel.append(check,document.createTextNode(' 送信前に確認する'));compose.append(confirmLabel);
+      confirmLabel.append(check,document.createTextNode(' 送信前に確認する'));toolsPanel.append(confirmLabel);
       const conversation=document.createElement('section');conversation.className='skr-card skr-reply-wrap';panel.append(conversation);
       const ct=document.createElement('h3');ct.textContent='02 / 返信は同じ会話で確認';conversation.append(ct);
       const chatOpen=button(conversation,'↗  iPadと同じChatGPT会話を開く',()=>{
@@ -2197,6 +2223,60 @@
       background:#3d3a32;color:#ffeaca;font-size:13px;min-height:44px}
     #skr-panel #skr-confirm-posted[hidden]{display:none!important}
     #skr-panel #skr-file-progress-quick:empty{display:none!important}
+  `;
+  css.textContent += `
+    /* v1.10.0: ChatGPT-like, compact, bottom-docked sender composer */
+    #skr-panel .skr-draft-tools-panel{margin:10px 0}
+    #skr-panel .skr-compose{contain:none!important}
+    #skr-panel .skr-compose .skr-step-label{display:none!important}
+    #skr-panel .skr-input-row{display:flex;align-items:flex-end;gap:8px;min-height:48px;width:100%}
+    #skr-panel[data-theme] .skr-input-row #skr-typing{
+      flex:1 1 auto;min-width:0;width:1%;height:48px;min-height:48px!important;
+      max-height:144px!important;resize:none!important;overflow-y:auto;
+      font-size:16px!important;line-height:1.42!important;
+      padding:12px 5px!important;margin:0!important;background:transparent!important;
+      color:var(--ui-text,#f5f5f5)!important;-webkit-text-fill-color:var(--ui-text,#f5f5f5)!important;
+      border:0!important;box-shadow:none!important;border-radius:0!important;outline:none!important
+    }
+    #skr-panel[data-theme] .skr-input-row #skr-typing::placeholder{
+      color:var(--ui-muted,#aaadb6)!important;-webkit-text-fill-color:var(--ui-muted,#aaadb6)!important}
+    #skr-panel[data-theme] .skr-input-row #skr-attach-button,
+    #skr-panel[data-theme] .skr-input-row #skr-remote-send{
+      flex:0 0 40px;width:40px!important;min-width:40px!important;
+      height:40px!important;min-height:40px!important;padding:0!important;margin:4px 0 2px!important;
+      border-radius:50%!important;display:flex;align-items:center;justify-content:center;
+      font-size:25px!important;line-height:1!important;box-shadow:none!important
+    }
+    #skr-panel[data-theme] .skr-input-row #skr-attach-button{
+      background:color-mix(in srgb,var(--ui-layer,#303c45) 80%,transparent)!important;
+      border:1px solid var(--ui-border,#546676)!important;color:var(--ui-text,#fff)!important}
+    #skr-panel[data-theme] .skr-input-row #skr-remote-send{
+      background:var(--ui-accent,#0d856d)!important;color:#fff!important;
+      border:1px solid var(--ui-accent,#0d856d)!important}
+    #skr-panel[data-theme] .skr-input-row #skr-remote-send:disabled{opacity:.35!important}
+    #skr-panel .skr-compose .skr-draft-count{font-size:10px;text-align:right;margin:1px 5px 0!important;padding:0;opacity:.7}
+    #skr-panel .skr-compose #skr-file-progress-quick{font-size:11px;margin:5px 7px 0;padding:0}
+    #skr-panel[data-theme] .skr-compose{
+      background:color-mix(in srgb,var(--ui-main,#121d27) 90%,white)!important;
+      border:1px solid var(--ui-border,#4b5e6b)!important;border-radius:24px!important;
+      padding:11px 12px 8px!important;box-shadow:0 9px 26px #0006!important;z-index:12!important;
+      animation:none!important
+    }
+    html.skr-focus-mode #skr-panel[data-theme]{padding-bottom:240px!important}
+    html.skr-focus-mode #skr-panel[data-theme] .skr-compose{
+      position:fixed!important;bottom:calc(env(safe-area-inset-bottom,0px) + 10px)!important;
+      left:max(12px,env(safe-area-inset-left,0px))!important;
+      right:max(12px,env(safe-area-inset-right,0px))!important;
+      width:auto!important;max-width:720px!important;margin:0 auto!important;
+      height:auto!important;max-height:230px!important;overflow:auto!important;
+    }
+    #skr-panel #skr-confirm-posted{min-height:36px;font-size:12px;margin:5px 0}
+    #skr-panel .skr-draft-tools-panel summary{font-size:13px}
+    @media(min-width:750px){
+      html.skr-focus-mode #skr-panel[data-theme] .skr-compose{
+        left:50%!important;right:auto!important;width:min(720px,calc(100vw - 40px))!important;
+        transform:translateX(-50%)!important}
+    }
   `;
   document.documentElement.append(css);
   const launcher = document.createElement('button'); launcher.id = 'skr-launcher'; launcher.textContent = '⌨'; launcher.title = 'リモート入力';
