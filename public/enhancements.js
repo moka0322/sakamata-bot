@@ -1,4 +1,4 @@
-/* Sakamata Remote Keyboard v1.8: local-only tools for standalone PWA */
+/* Remote Keyboard v1.9: local-only tools for standalone PWA */
 (()=>{
 "use strict";
 if(!window.__SKR_STANDALONE__)return;
@@ -39,7 +39,7 @@ function exportBackup(){
  const payload={type:"sakamata-local-backup",version:1,time:new Date().toISOString(),
   draft:localStorage.getItem(keys.draft)||"",history:read(keys.history,[]),snippets:read(keys.snippets,[])};
  const url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:"application/json"}));
- const a=element("a");a.href=url;a.download="sakamata-backup-"+new Date().toISOString().slice(0,10)+".json";
+ const a=element("a");a.href=url;a.download="remote-input-backup-"+new Date().toISOString().slice(0,10)+".json";
  document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),6000);
  info("バックアップを保存したよ。接続コードは含んでいないよ。");
 }
