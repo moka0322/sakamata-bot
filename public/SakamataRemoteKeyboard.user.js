@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sakamata Remote Keyboard
 // @namespace    https://chatgpt.com/
-// @version      1.8.1
+// @version      1.8.2
 // @description  iPhone/iPad遠隔入力：見やすい専用画面、安定した下書き同期、返信検出診断。
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -16,7 +16,7 @@
   if (document.getElementById('skr-launcher')) return;
   const STANDALONE = !!window.__SKR_STANDALONE__; // independently hosted sender webpage
 
-  const VERSION = '1.8.1';
+  const VERSION = '1.8.2';
   const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const CODE_LEN = 12;
   const MAX_TEXT = 900;
@@ -1698,6 +1698,18 @@
       room.autocapitalize='characters';room.autocomplete='off';more.append(room);
       button(more,active?'同じiPadへ再接続':'iPadへ接続',()=>startSend(room.value));
       button(more,'接続を再確認（反応が止まったら）',()=>{restartListenerIfStale(0);probePeer();});
+      button(more,'iPadの応答を10秒確認（文章は送らない）',()=>{
+        if(mode!=='send'||!active){updateStatus('先に接続コードを入力してiPadへの接続を開始してね。',true);return;}
+        const started=now();
+        updateStatus('iPadに確認信号を送るよ。下書きは送信しないよ。');
+        probePeer();
+        delay(()=>{
+          if(mode!=='send'||!active)return;
+          if(lastReceiverAckAt>=started)updateStatus('接続診断：iPadが直接応答したよ！');
+          else if(relayPostAt>=started)updateStatus('接続診断：中継へ確認信号は送れたけど、iPadの応答が10秒以内になかったよ。');
+          else updateStatus('接続診断：確認信号の中継送信も未確認。'+(relayError||'通信診断v2で中継の状態を確認してね。'),true);
+        },10000);
+      });
       button(more,'通信診断を表示',()=>{updateStatus('中継投稿：'+(relayPostAt?'成功':'未確認')+'／中継受信：'+(relayPollAt?'成功':'未確認')+'／iPadの応答：'+(lastReceiverAckAt?'確認あり':'未確認')+(relayError?'／'+relayError:''));});
       button(more,'文章をもう一度同期',()=>sendDraft(true));
       button(more,'送信済みを確認してクリア',()=>{
