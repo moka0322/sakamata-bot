@@ -169,10 +169,21 @@
 
 
   function randomCode() {
-    // 32-character alphabet; 12 chars = 60-bit one-time shared secret.
-    const values = new Uint8Array(CODE_LEN);
-    crypto.getRandomValues(values);
-    return [...values].map(v => ALPHABET[v & 31]).join('');
+    // New codes avoid visually ambiguous 'Z' and '2'.
+    // Old codes (which may contain both) remain fully valid and load unchanged.
+    const choices=ALPHABET.replace(/[Z2]/g,'');
+    const limit=Math.floor(256/choices.length)*choices.length;
+    let result='';
+    while(result.length<CODE_LEN){
+      const random=new Uint8Array(CODE_LEN);
+      crypto.getRandomValues(random);
+      for(const n of random){
+        if(n>=limit)continue; // reject to avoid modulo bias
+        result+=choices[n%choices.length];
+        if(result.length===CODE_LEN)break;
+      }
+    }
+    return result;
   }
   function randomId() {
     const bytes = new Uint8Array(12);
