@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Remote Keyboard
 // @namespace    https://chatgpt.com/
-// @version      1.9.1
+// @version      1.9.2
 // @description  iPhone/iPad遠隔入力：見やすい専用画面、安定した下書き同期、返信検出診断。
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -16,7 +16,7 @@
   if (document.getElementById('skr-launcher')) return;
   const STANDALONE = !!window.__SKR_STANDALONE__; // independently hosted sender webpage
 
-  const VERSION = '1.9.1';
+  const VERSION = '1.9.2';
   const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const CODE_LEN = 12;
   const MAX_TEXT = 900;
@@ -223,6 +223,7 @@
   let generation = 0, lastSeq = -1, seq = 0, lastApplied = null, currentSender = '', sentText = '', lastPublish = 0;
   let seenIds = new Set(), publishing = false, composition = false, pendingAuto = 0;
   let pendingSend = null, pendingSendTimer = 0, receiverSending = false, manualWatch = false;
+  let ambiguousSendText = ''; // Unverified send never automatically deletes a draft.
   const completedRequests = new Set(), completedFiles = new Set();
   const latestReceipt = new Map(), receivedFiles = new Map();
   let sendingFile = false;
@@ -381,10 +382,24 @@
     refreshSendButton();
   }
   function refreshSendButton() {
-    const b = el('#skr-remote-send');
-    if (!b) return;
-    b.disabled = !connected || !active || !!pendingSend;
-    b.textContent = pendingSend ? '送信を確認しています…' : '↗  iPadへ送信';
+    const b=el('#skr-remote-send');
+    if(b){
+      b.disabled=!connected||!active||!!pendingSend;
+      b.textContent=pendingSend?'送信を確認しています…':'↗  iPadへ送信';
+    }
+    const unsure=el('#skr-confirm-posted');
+    if(unsure)unsure.hidden=!!pendingSend||!ambiguousSendText||
+      (el('#skr-typing')?.value||'')!==ambiguousSendText;
+  }
+  function confirmPostedAndClear() {
+    if(pendingSend){updateStatus('送信確認中だよ。完了まで待ってね。',true);return;}
+    const input=el('#skr-typing');
+    if(!input?.value)return;
+    if(!window.confirm('iPadのChatGPTに投稿済みであることを確認した？\n確認できた場合だけ、このiPhoneの下書きを消去するよ。'))return;
+    saveHistory(input.value);
+    input.value='';sentText='';ambiguousSendText='';saveDraft('');
+    clearTimeout(typingTimer);refreshDraftCount();refreshSendButton();
+    updateStatus('投稿済みを確認して、iPhoneの下書きを消したよ。');
   }
   async function setupCrypto(pairCode) {
     const topicHash = await crypto.subtle.digest('SHA-256', encoder.encode('SKR4/topic/' + pairCode));
@@ -695,12 +710,24 @@
       }
       const priorMessages = userMessages();
       const baselineReply = lastAssistantNode();
+      const beforeAssistantText=baselineReply?(baselineReply.innerText||baselineReply.textContent||'').trim():'';
       const beforeCount = priorMessages.length, beforeLast = priorMessages[beforeCount - 1];
       const beforeRenderedCount=countRenderedExactUserText(text);
       sendButton.click();
-      const verified = await awaitChatSubmission(text, beforeCount, beforeLast, epoch, 17000, beforeRenderedCount);
+      let verified = await awaitChatSubmission(text, beforeCount, beforeLast, epoch, 21500, beforeRenderedCount);
       if (epoch !== generation) return;
-      if (!verified) {
+      if(!verified){
+        // Fallback for ChatGPT UIs without author-role DOM markers: after this
+        // exact Send click, a new/changed assistant turn AND an empty composer
+        // is strong evidence of a submitted prompt.
+        const latest=lastAssistantNode();
+        const afterText=latest?(latest.innerText||latest.textContent||'').trim():'';
+        const emptyComposer=!!findEditor()&&!normalize(readEditor(findEditor())).trim();
+        verified=emptyComposer&&!!afterText&&
+          (latest!==baselineReply || afterText!==beforeAssistantText)&&
+          (userMessages().length>beforeCount || latest!==baselineReply || afterText.length>beforeAssistantText.length+8);
+      }
+      if(!verified){
         // A blank composer can be temporary while ChatGPT/React re-renders.
         // Never erase the sender's only draft without seeing a posted user turn.
         if (await editorStayedEmpty(epoch)) {
@@ -728,9 +755,11 @@
     clearTimeout(pendingSendTimer);
     sendRescueTimers.forEach(clearTimeout); sendRescueTimers=[];
     if (!packet.ok) {
-      updateStatus('遠隔送信：' + (packet.message || '失敗。iPadを確認してね。'), true);
-      return;
+      ambiguousSendText=original;
+      updateStatus('遠隔送信：' + (packet.message || '完了を確認できないよ。iPadを確認してね。')+'／投稿済みなら下の「送信済みを確認してクリア」を押してね。', true);
+      refreshSendButton();return;
     }
+    ambiguousSendText='';
     const typing = el('#skr-typing');
     // Do not clear text that the user changed while waiting for confirmation.
     saveHistory(original);
@@ -738,7 +767,7 @@
       typing.value = '';
       sentText = '';
       saveDraft('');
-      clearTimeout(typingTimer);
+      clearTimeout(typingTimer);refreshDraftCount();
     }
     const note = packet.verified === false
       ? 'iPadの入力欄は空になったよ。ただし投稿完了は未確認。文章は「前回の文章」から復元できるよ。'
@@ -785,13 +814,14 @@
     }
     clearTimeout(typingTimer);
     const request = { id: randomId(), text };
-    pendingSend = request;
+    pendingSend = request; ambiguousSendText='';
     refreshSendButton();
     const epoch = generation;
     pendingSendTimer = delay(() => {
       if (epoch !== generation || pendingSend?.id !== request.id) return;
-      pendingSend = null;
-      updateStatus('送信結果を確定できないよ。iPadで投稿済みなら『送信済みを確認してクリア』を使ってね（二重送信しないで）。', true);
+      pendingSend = null; ambiguousSendText=request.text;
+      updateStatus('送信結果を確認できないよ。iPadで投稿済みなら、下の「送信済みを確認してクリア」を使ってね（二重送信しないで）。',true);
+      refreshSendButton();
     }, 33000);
     // Recovery only polls for receipts; it NEVER resends the actual post.
     scheduleReceiptRecovery(epoch, request.id);
@@ -801,7 +831,9 @@
     } catch (e) {
       if (epoch === generation && pendingSend?.id === request.id) {
         pendingSend = null; clearTimeout(pendingSendTimer);
+        ambiguousSendText='';
         updateStatus('送信命令を届けられなかった：' + e.message, true);
+        refreshSendButton();
       }
     }
   }
@@ -1337,7 +1369,7 @@
   // Binary content, original filename and media type are never sent to ntfy in plaintext.
   function updateFileProgress(message,bad=false) {
     fileTransferStage=message;fileTransferFailed=!!bad;
-    for(const selector of ['#skr-file-progress','#skr-file-progress-quick']){
+    for(const selector of ['#skr-file-progress-quick']){
       const node=el(selector);if(node){node.textContent=message;node.dataset.error=String(bad);}
     }
   }
@@ -1778,8 +1810,6 @@
         });quick.append(b);
       };
       jump('✎ 入力','#skr-typing');jump('↩ 会話','.skr-reply-wrap');
-      const quickPhoto=button(quick,'▧ 写真を選ぶ',()=>el('#skr-photo-quick')?.click());
-      quickPhoto.classList.add('skr-quick-photo');
       const compose=document.createElement('section');compose.className='skr-card skr-compose';panel.append(compose);
       const l=document.createElement('label');l.textContent='01  /  iPhoneから入力';l.className='skr-step-label';l.htmlFor='skr-typing';compose.append(l);
       const typing=document.createElement('textarea');typing.id='skr-typing';typing.rows=5;typing.maxLength=MAX_TEXT;
@@ -1801,28 +1831,29 @@
       const undo = button(tools, '↶ 元に戻す（30秒）', undoEraseDraft);
       undo.id = 'skr-undo-erase'; undo.style.gridColumn = '1 / -1';
       undo.style.display = erasedDraft === null ? 'none' : 'block';
-      const photoRow=document.createElement('div');photoRow.className='skr-photo-shortcuts';compose.append(photoRow);
-      const photoInput=document.createElement('input');photoInput.type='file';photoInput.id='skr-photo-quick';photoInput.accept='image/*';photoInput.multiple=true;photoInput.className='skr-visually-hidden-file';compose.append(photoInput);
-      const documentInput=document.createElement('input');documentInput.type='file';documentInput.id='skr-document-quick';documentInput.accept='image/*,application/pdf,text/plain';documentInput.multiple=true;documentInput.className='skr-visually-hidden-file';compose.append(documentInput);
-      const handleQuickSelection=async input=>{
-        const selected=[...(input.files||[])].slice(0,4);input.value='';
+      // One attachment entry point. iOS Safari provides Photo Library, Camera and Files.
+      const attachmentInput=document.createElement('input');attachmentInput.type='file';attachmentInput.id='skr-attach-input';
+      attachmentInput.accept='image/*,application/pdf,text/plain';attachmentInput.multiple=true;
+      attachmentInput.className='skr-visually-hidden-file';compose.append(attachmentInput);
+      attachmentInput.addEventListener('change',async()=>{
+        const selected=[...(attachmentInput.files||[])].slice(0,4);attachmentInput.value='';
         if(!selected.length)return;
-        if(selected.length>1&&!window.confirm(selected.length+'件のファイルを送信する？（iPadの添付完了は別途確認が必要です）'))return;
-        for(const file of selected) await sendChosenFile(file);
-      };
-      photoInput.addEventListener('change',()=>handleQuickSelection(photoInput));
-      documentInput.addEventListener('change',()=>handleQuickSelection(documentInput));
-      button(photoRow,'▧ 写真を選んで送る',()=>photoInput.click());
-      button(photoRow,'↥ ファイルを選んで送る',()=>documentInput.click());
+        if(selected.length>1&&!window.confirm(selected.length+'件のファイルを転送する？\n添付完了はiPadで確認してね。'))return;
+        for(const file of selected)await sendChosenFile(file);
+      });
+      const attachmentButton=button(compose,'＋  写真・ファイルを添付',()=>attachmentInput.click());
+      attachmentButton.id='skr-attach-button';
       const quickProgress=document.createElement('div');quickProgress.id='skr-file-progress-quick';quickProgress.setAttribute('role','status');
-      quickProgress.textContent=fileTransferStage;quickProgress.dataset.error=String(fileTransferFailed);compose.append(quickProgress);
-      p('写真は選択後すぐ転送を開始するよ。ChatGPTへの添付完了はiPadで確認してね。',compose);
+      quickProgress.textContent=fileTransferStage==='まだファイルを選択していないよ。'?'':fileTransferStage;
+      quickProgress.dataset.error=String(fileTransferFailed);compose.append(quickProgress);
       const count = document.createElement('div');
       count.id = 'skr-draft-count'; count.className = 'skr-draft-count';
       count.textContent = typing.value.length + ' / ' + MAX_TEXT + ' 文字';
       compose.append(count);
       const sendButton=button(compose,'↗  iPadへ送信',requestRemoteSend,true);
       sendButton.id='skr-remote-send';refreshSendButton();
+      const confirmPosted=button(compose,'✓  送信済みを確認してクリア',confirmPostedAndClear);
+      confirmPosted.id='skr-confirm-posted';refreshSendButton();
       const hint=p('iPadを更新して入力欄が空に見えても、iPhoneに保存した文章は送信直前に再同期するよ。応答が止まったときは二重送信せず、接続の回復を待ってね。',compose);
       hint.className='skr-draft-hint';
       const confirmLabel=document.createElement('label');confirmLabel.className='skr-choice';
@@ -1836,28 +1867,20 @@
         else {probePeer();updateStatus('iPadに会話リンクを問い合わせたよ。少し待ってからもう一度押してね。');}
       },true);chatOpen.id='skr-open-chat';
       const chatHint=p('iPadから現在の会話リンクを受け取ると、ChatGPTの返信全文をiPhoneで開けるよ。',conversation);chatHint.id='skr-chat-link-hint';
-      const filePanel=details(panel,'03  /  写真・ファイル（試験中）');filePanel.id='skr-file-panel';
-      p('小さなファイル（1件約1.7MB以下）を選択。実際の添付完了はiPadで確認してね。',filePanel);
-      const modeLabel=document.createElement('label');modeLabel.textContent='写真の画質';modeLabel.htmlFor='skr-photo-mode';filePanel.append(modeLabel);
+      const more=details(panel,'⚙  接続・詳細設定');
+      const mediaSettings=details(more,'写真の画質設定');
+      const photoLabel=document.createElement('label');photoLabel.textContent='送信する写真の画質';photoLabel.htmlFor='skr-photo-mode';mediaSettings.append(photoLabel);
       const modeSelect=document.createElement('select');modeSelect.id='skr-photo-mode';
       for(const [v,label] of [['auto','自動（おすすめ）'],['quality','高画質優先'],['small','容量節約'],['original','元画像のまま（制限あり）']]){
         const o=document.createElement('option');o.value=v;o.textContent=label;modeSelect.append(o);
       }
       modeSelect.value=['auto','quality','small','original'].includes(settings.photoMode)?settings.photoMode:'auto';
-      modeSelect.addEventListener('change',()=>{settings.photoMode=modeSelect.value;saveSettings();updateFileProgress('画質設定：'+modeSelect.selectedOptions[0].textContent+'。必要な写真は容量制限内に圧縮するよ。');});
-      filePanel.append(modeSelect);
-      const fileInput=document.createElement('input');fileInput.id='skr-file';fileInput.type='file';
-      fileInput.accept='image/*,application/pdf,text/plain';fileInput.multiple=true;
-      fileInput.addEventListener('change',async()=>{
-        const files=[...(fileInput.files||[])].slice(0,4);fileInput.value='';
-        if(files.length>1&&!window.confirm(files.length+'件のファイルを暗号化して中継サービスへ送る？'))return;
-        for(const f of files)await sendChosenFile(f);
-      });filePanel.append(fileInput);
-      const progress=document.createElement('div');progress.id='skr-file-progress';progress.setAttribute('role','status');
-      progress.textContent=fileTransferStage;progress.dataset.error=String(fileTransferFailed);filePanel.append(progress);
-      p('※「iPadで受信」は「ChatGPTへ添付済み」とは違うよ。iPadのプレビューを確認してね。',filePanel);
-      button(filePanel,'コピーした画像を送る（対応Safariのみ）',pasteImage);
-      const more=details(panel,'⚙  接続・詳細設定');
+      modeSelect.addEventListener('change',()=>{
+        settings.photoMode=modeSelect.value;saveSettings();
+        updateStatus('写真画質を変更したよ：'+modeSelect.selectedOptions[0].textContent);
+      });mediaSettings.append(modeSelect);
+      p('ファイル転送は容量制限があるよ。大きい写真は画質設定に応じて圧縮するね。',mediaSettings);
+
       const label=document.createElement('label');label.textContent='iPadの接続コード';label.htmlFor='skr-room';more.append(label);
       const room=document.createElement('input');room.id='skr-room';room.value=pretty(code);room.placeholder='XXXX-XXXX-XXXX';
       room.autocapitalize='characters';room.autocomplete='off';room.spellcheck=false;room.setAttribute('autocorrect','off');room.setAttribute('enterkeyhint','done');
@@ -1895,12 +1918,6 @@
       });
       button(more,'通信診断を表示',()=>{updateStatus('通信先照合：'+channelCheck()+'／中継投稿：'+(relayPostAt?'成功':'未確認')+'／中継受信：'+(relayPollAt?'成功':'未確認')+'／iPad応答：'+(lastReceiverAckAt?'あり':'未確認')+'／受信行数：'+pollMessageRows+(relayError?'／'+relayError:''));});
       button(more,'文章をもう一度同期',()=>sendDraft(true));
-      button(more,'送信済みを確認してクリア',()=>{
-        if(pendingSend){updateStatus('送信結果待ちだよ。少し待ってから確認してね。');return;}
-        if(!window.confirm('iPad側で投稿済みなのを確認した？ このiPhoneの下書きを消去するよ。'))return;
-        const box=el('#skr-typing');if(box)box.value='';sentText='';saveDraft('');clearTimeout(typingTimer);
-        updateStatus('確認した下書きを消したよ。次の文章を書いてね。');
-      });
       button(more,'未送信の下書きを消去（iPadにも反映）',()=>{
         if(pendingSend){updateStatus('送信結果待ちだよ。');return;}
         if(typing.value&&!window.confirm('iPadとiPhoneの未送信下書きを消す？'))return;
@@ -2174,6 +2191,15 @@
     #skr-panel #skr-file-progress-quick[data-error="true"]{color:#fcaeae}
     #skr-panel .skr-reply-wrap{padding-top:13px;padding-bottom:14px}
     #skr-panel .skr-reply-wrap button.skr-primary{font-size:14px;min-height:44px}
+  `;
+  css.textContent += `
+    #skr-panel #skr-attach-button{width:100%;margin:8px 0 3px;min-height:52px;
+      background:var(--ui-layer,#2a4653);color:var(--ui-text,#f7fcff);
+      border:1px solid var(--ui-border,#44798c);font-size:15px;font-weight:750}
+    #skr-panel #skr-confirm-posted{width:100%;border-color:#8b7459;
+      background:#3d3a32;color:#ffeaca;font-size:13px;min-height:44px}
+    #skr-panel #skr-confirm-posted[hidden]{display:none!important}
+    #skr-panel #skr-file-progress-quick:empty{display:none!important}
   `;
   document.documentElement.append(css);
   const launcher = document.createElement('button'); launcher.id = 'skr-launcher'; launcher.textContent = '⌨'; launcher.title = 'リモート入力';
