@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sakamata Remote Keyboard
 // @namespace    https://chatgpt.com/
-// @version      1.9.0
+// @version      1.9.1
 // @description  iPhone/iPad遠隔入力：見やすい専用画面、安定した下書き同期、返信検出診断。
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -16,7 +16,7 @@
   if (document.getElementById('skr-launcher')) return;
   const STANDALONE = !!window.__SKR_STANDALONE__; // independently hosted sender webpage
 
-  const VERSION = '1.9.0';
+  const VERSION = '1.9.1';
   const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const CODE_LEN = 12;
   const MAX_TEXT = 900;
@@ -466,6 +466,15 @@
   function readEditor(editor) {
     if (!editor) return '';
     if ('value' in editor && (editor.tagName === 'TEXTAREA' || editor.tagName === 'INPUT')) return editor.value;
+    // ProseMirror renders multiline input as sibling paragraphs on iPad Safari.
+    // innerText can add extra blank lines between them; read the actual paragraph units.
+    const blocks=[...editor.children];
+    if(editor.classList?.contains('ProseMirror') && blocks.length && blocks.every(n=>n.tagName==='P')) {
+      return blocks.map(n=>{
+        const value=n.innerText??n.textContent??'';
+        return value.replace(/\n$/,'');
+      }).join('\n');
+    }
     return editor.innerText ?? editor.textContent ?? '';
   }
   function normalize(s) {
@@ -489,48 +498,40 @@
   }
   function applyDraft(text, n, sid) {
     if (mode !== 'receive' || !allowed || typeof text !== 'string' || text.length > MAX_TEXT || !Number.isSafeInteger(n)) return;
-    if (sid !== currentSender) return;
-    if (n <= lastSeq) return;
-    const editor = findEditor();
-    if (!editor) { updateStatus('入力欄が見つからないよ。会話を開いてね。', true); return; }
-    const existing = normalize(readEditor(editor));
-    // Protect locally edited or previously written drafts. Do not overwrite them.
-    if (lastApplied === null && existing.trim()) {
-      updateStatus('iPadの入力欄に文章があるよ。空にしてから「同期を再開」してね。', true); return;
+    if (sid !== currentSender || n <= lastSeq) return;
+    const editor=findEditor();
+    if(!editor){updateStatus('入力欄が見つからないよ。会話を開いてね。',true);return;}
+    const current=normalize(readEditor(editor));
+    const previouslyOwned=lastApplied===null?loadOwnedDraft():lastApplied;
+    if(current.trim() && previouslyOwned===null){
+      updateStatus('iPad側の文章を保護中。消さずに「今の下書きをiPhoneの入力として引き継ぐ」を押してね。',true);return;
     }
-    if (lastApplied !== null && existing !== normalize(lastApplied)) {
-      if (!existing.trim()) lastApplied = null;
-      else {
-        allowed = false;
-        updateStatus('iPadで文章が変更されたので同期を一時停止したよ。', true);
-        return;
-      }
+    if(previouslyOwned!==null && current!==normalize(previouslyOwned) && current!==normalize(text) && current.trim()){
+      allowed=false;
+      updateStatus('iPad側で変更された文章を保護したよ。復旧ボタンで引き継げるよ。',true);return;
     }
-    if (existing !== normalize(text) && !writeEditor(editor, text)) {
-      updateStatus('入力欄への書き込みに失敗したよ。', true); return;
+    if(current!==normalize(text) && !writeEditor(editor,text)){
+      updateStatus('iPad入力欄への書き込みに失敗。文章は消さずに保持するよ。',true);return;
     }
-    lastApplied = text;
-    lastSeq = n;recordOwnedDraft(text);
-    updateStatus('iPhoneの下書きを受信：' + text.length + '文字');
-    // A relay HTTP 200 only proves that ntfy accepted a message. This packet
-    // proves the iPad actually applied the draft to the ChatGPT editor.
-    publish('up',{type:'draft_ack',sid,seq:n,length:text.length},generation).catch(()=>{});
-    // v0.3 checked at 210ms, mistaking React re-renders/newlines for failure.
-    // v0.4 checks later and only reports a warning; it never disables syncing here.
+    lastApplied=text;lastSeq=n;
     clearTimeout(verifyTimer);
-    verifyTimer = delay(() => {
-      if (mode !== 'receive' || !allowed || currentSender !== sid) return;
-      const latest = findEditor();
-      if (!latest) return;
-      const actual = normalize(readEditor(latest));
-      if (actual === normalize(text)) return;
-      if (!actual.trim()) {
-        updateStatus('文章が消えたみたい。iPhoneで「再送信」を押してみてね。', true);
-      } else {
-        // Preserve actual text; do not overwrite it with the next remote update.
-        updateStatus('文字は届いたよ。iPadの表示を確認してね（入力欄の差異を検出）。');
+    updateStatus('iPadの入力欄へ反映中… '+text.length+'文字');
+    // A text editor returning true does not prove that React adopted the update.
+    // ACK only after checking the actual iPad composer after its render cycle.
+    const epoch=generation;
+    verifyTimer=delay(()=>{
+      if(epoch!==generation||mode!=='receive'||sid!==currentSender||lastSeq!==n)return;
+      const latest=findEditor(), actual=latest?normalize(readEditor(latest)):null;
+      if(actual===normalize(text)){
+        recordOwnedDraft(text);
+        updateStatus(text.length?'iPhoneの下書きを反映したよ：'+text.length+'文字':'iPadの入力欄も空になったよ');
+        publish('up',{type:'draft_ack',sid,seq:n,length:text.length},epoch).catch(()=>{});
+      }else{
+        // Preserve existing user text; do not invent an ACK or overwrite it again.
+        if(actual && actual.trim() && actual!==normalize(text))allowed=false;
+        updateStatus('iPadの表示が同期内容と一致しないよ。文章を保持して、復旧操作を待ってるね。',true);
       }
-    }, 1200);
+    },650);
   }
 
 
@@ -647,9 +648,10 @@
     const editor = findEditor();
     if (!editor) return false;
     const existing = normalize(readEditor(editor));
+    const owned=lastApplied===null?loadOwnedDraft():lastApplied;
     // Never override an unrelated draft created on the iPad.
-    if (existing.trim() && lastApplied === null && existing !== normalize(text)) return false;
-    if (existing.trim() && lastApplied !== null && existing !== normalize(lastApplied) && existing !== normalize(text)) return false;
+    if (existing.trim() && owned === null && existing !== normalize(text)) return false;
+    if (existing.trim() && owned !== null && existing !== normalize(owned) && existing !== normalize(text)) return false;
     if (existing !== normalize(text) && !writeEditor(editor, text)) return false;
     lastApplied = text;recordOwnedDraft(text);
     lastSeq = Math.max(lastSeq, n);
@@ -1277,14 +1279,18 @@
     saveDraft('');
     refreshDraftCount();
     clearTimeout(typingTimer);
-    // Force a blank draft to the iPad as well, using the existing guarded protocol.
+    // Clear is an urgent synchronization, not a normal throttled typing update.
     changed();
+    if(active && connected){
+      clearTimeout(typingTimer);
+      typingTimer=delay(()=>sendDraft(true,true),120);
+    }
     const undo = el('#skr-undo-erase');
     if (undo) undo.style.display = 'block';
     eraseUndoTimer = delay(resetEraseUndo, 30000);
     updateStatus(connected
-      ? '入力欄を全消去したよ。iPadへも同期するね。30秒以内なら「元に戻す」で復元できるよ。'
-      : 'iPhoneの入力欄を消去したよ。iPadには未接続なので同期されていない可能性があるよ。', !connected);
+      ? 'iPhoneを消去したよ。iPadの消去は反映確認待ち（30秒以内は復元できるよ）。'
+      : 'iPhoneだけ消去したよ。iPadへの消去は未確認なので再接続後に確認してね。', !connected);
   }
   function undoEraseDraft() {
     const typing = el('#skr-typing');
@@ -1637,14 +1643,14 @@
     },25000);
     startHealthChecks();delay(()=>probePeer(),1000);
   }
-  async function sendDraft(force = false) {
+  async function sendDraft(force = false, urgent = false) {
     if (!active || !connected || mode !== 'send' || publishing || pendingSend) return;
     if (composition) return;
     const value = el('#skr-typing')?.value ?? sentText;
     if (value.length > MAX_TEXT) { updateStatus('入力は最大 ' + MAX_TEXT + ' 文字までだよ。', true); return; }
     if (!force && value === sentText) return;
-    const wait = Math.max(0, 4200 - (now() - lastPublish));
-    if (wait > 0) { clearTimeout(typingTimer); typingTimer = delay(() => sendDraft(force), wait); return; }
+    const wait = urgent ? 0 : Math.max(0, 4200 - (now() - lastPublish));
+    if (wait > 0) { clearTimeout(typingTimer); typingTimer = delay(() => sendDraft(force, urgent), wait); return; }
     sentText = value; publishing = true; const epoch = generation; lastPublish = now();
     try { await publish('down', { type: 'draft', sid: sessionId, seq: ++seq, text: value }, epoch);
       if (epoch === generation) updateStatus(value.length ? '中継へ送信したよ（iPadの反映を確認中）：' + value.length + '文字' : '空の下書きを中継へ送ったよ（反映確認中）。');
@@ -1663,10 +1669,21 @@
     if (!composition && !pendingSend) typingTimer = delay(() => sendDraft(), 550);
   }
   function resume() {
-    const editor = findEditor();
-    if (!editor || normalize(readEditor(editor)).trim()) { updateStatus('入力欄が空になってから再開してね。', true); return; }
-    lastApplied = null; lastSeq = -1; allowed = true;
-    updateStatus('同期を再開したよ。iPhoneで「文章を再送信」を押してね。');
+    const editor=findEditor();
+    if(!editor){updateStatus('iPadの入力欄を見つけられないよ。',true);return;}
+    const existing=readEditor(editor), owned=lastApplied===null?loadOwnedDraft():lastApplied;
+    if(normalize(existing).trim()){
+      if(owned!==null && normalize(existing)===normalize(owned)){
+        lastApplied=existing;lastSeq=-1;allowed=true;recordOwnedDraft(existing);
+        updateStatus('残った文章は以前の同期内容と一致したよ。消さずに復旧した！iPhoneで文章を再同期してね。');
+      }else{
+        updateStatus('iPadの文章を保護しているよ。確認して引き継ぐね。');
+        adoptVisibleDraft(); // always asks confirmation; never silently erases the editor
+      }
+      return;
+    }
+    lastApplied=null;lastSeq=-1;allowed=true;recordOwnedDraft('');
+    updateStatus('空の入力欄で同期を再開したよ。iPhoneの文章を再同期してね。');
   }
   function changeRole() { disconnect(); mode = 'choose'; focusMode = false; document.documentElement.classList.remove('skr-focus-mode'); prefs.role = 'choose'; savePrefs(); draw(); updateStatus('端末の役割を選んでね。'); }
   function forgetPair() {
