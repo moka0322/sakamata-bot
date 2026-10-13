@@ -1302,8 +1302,14 @@
     catch(e){if(pendingReply?.id===id){clearTimeout(pendingReply.timer);pendingReply=null;}updateStatus('返信確認エラー：'+e.message,true);}
   }
   function refreshDraftCount() {
-    const typing = el('#skr-typing'), counter = el('#skr-draft-count');
-    if (typing && counter) counter.textContent = typing.value.length + ' / ' + MAX_TEXT + ' 文字';
+    const typing=el('#skr-typing'),counter=el('#skr-draft-count');
+    if(!typing)return;
+    if(counter)counter.textContent=typing.value.length+' / '+MAX_TEXT+' 文字';
+    // Works after clipboard paste, undo and confirmed send as well as typing.
+    if(mode==='send'){
+      typing.style.height='auto';
+      typing.style.height=Math.min(Math.max(46,typing.scrollHeight),144)+'px';
+    }
   }
   function resetEraseUndo() {
     clearTimeout(eraseUndoTimer);
@@ -1824,12 +1830,8 @@
       const typing=document.createElement('textarea');typing.id='skr-typing';typing.rows=5;typing.maxLength=MAX_TEXT;
       typing.placeholder='メッセージを入力';typing.value=sentText||restoreDraft();
       typing.rows=2;typing.setAttribute('enterkeyhint','enter');
-      const sizeTyping=()=>{
-        typing.style.height='auto';
-        typing.style.height=Math.min(Math.max(46,typing.scrollHeight),144)+'px';
-      };
-      typing.addEventListener('input',sizeTyping);
-      delay(sizeTyping,0);
+      typing.addEventListener('input',refreshDraftCount);
+      delay(refreshDraftCount,0);
       typing.addEventListener('input',changed);
       typing.addEventListener('compositionstart',()=>{composition=true;});
       typing.addEventListener('compositionend',()=>{composition=false;changed();});compose.append(typing);
