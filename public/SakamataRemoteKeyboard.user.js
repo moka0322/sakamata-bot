@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sakamata Remote Keyboard
 // @namespace    https://chatgpt.com/
-// @version      1.7.0
+// @version      1.8.0
 // @description  iPhone/iPad遠隔入力：見やすい専用画面、安定した下書き同期、返信検出診断。
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -16,7 +16,7 @@
   if (document.getElementById('skr-launcher')) return;
   const STANDALONE = !!window.__SKR_STANDALONE__; // independently hosted sender webpage
 
-  const VERSION = '1.7.0';
+  const VERSION = '1.8.0';
   const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const CODE_LEN = 12;
   const MAX_TEXT = 900;
@@ -127,6 +127,7 @@
   let focusMode = STANDALONE || (prefs.role === 'send' && settings.autoFocus !== false);
   let replyTimer = 0, replyBusy = false, replyBaseline = null, lastReplyText = '', replyEpoch = 0;
   let remoteShare = null; // last confirmed receiver preference; resets on reconnect
+  let receiverChatUrl = ''; // encrypted receiver-provided chat deep link
   let pendingReply = null; // explicit, user-initiated reply request, with timeout
   let sendRescueTimers = []; // one-shot relay polling while waiting for a send receipt
   let lastReceiverAckAt = 0, lastInboundAt = 0, lastReceiverContactAt = 0, healthTimer = 0;
@@ -268,6 +269,12 @@
   }
   function topic(direction) { return topicRoot + '-' + direction; }
   function endpoint(direction) { return SERVICE + topic(direction); }
+  function safeChatUrl(raw) {
+    try { const u = new URL(raw);
+      return (u.protocol === 'https:' && (u.hostname === 'chatgpt.com' || u.hostname === 'chat.openai.com') && /^\/c\/[a-zA-Z0-9-]+$/.test(u.pathname)) ? u.origin+u.pathname : '';
+    } catch(_) { return ''; }
+  }
+  function currentChatUrl() { return !STANDALONE ? safeChatUrl(location.href) : ''; }
   function gm(options) {
     if (typeof GM !== 'undefined' && typeof GM.xmlHttpRequest === 'function') return GM.xmlHttpRequest(options);
     // Fetch transport for the independently hosted HTTPS sender. Cross-origin
@@ -291,7 +298,7 @@
     generation++; active = false; connected = false; allowed = false;
     lastReceiverAckAt=0;lastInboundAt=0;lastReceiverContactAt=0;lastHealthProbeAt=0;lastWatchdogRestartAt=0;lastDraftAckSeq=0;++transportCycle;clearInterval(healthTimer);
     key = null; topicRoot = ''; currentSender = ''; lastSeq = -1; lastApplied = null; seq = 0;
-    remoteShare = null; updateRemoteShareState();
+    remoteShare = null; receiverChatUrl = ''; updateRemoteShareState();
     seenIds.clear();
     clearTimeout(fallbackTimer); clearTimeout(retryTimer); clearTimeout(pollingTimer);
     clearInterval(pingTimer); clearTimeout(typingTimer); clearTimeout(verifyTimer); clearTimeout(pendingAuto);
@@ -709,7 +716,7 @@
           connected = true;
           if (currentSender !== packet.sid) { currentSender = packet.sid; lastSeq = -1; }
           updateStatus('iPhoneを認識したよ！入力を待ってるね。');
-          publish('up', { type: 'ack', sid: packet.sid }, epoch).then(() => announceShareState(epoch)).catch(e => updateStatus('応答エラー：' + e.message, true));
+          publish('up', { type: 'ack', sid: packet.sid, chatUrl: currentChatUrl() }, epoch).then(() => announceShareState(epoch)).catch(e => updateStatus('応答エラー：' + e.message, true));
         } else if (packet.type === 'draft' && typeof packet.sid === 'string') {
           connected = true;
           if (currentSender !== packet.sid) { currentSender = packet.sid; lastSeq = -1; }
@@ -736,6 +743,8 @@
       } else if (mode === 'send' && packet.type === 'ack' && packet.sid === sessionId) {
         const firstAck=!connected;
         lastReceiverAckAt=now();connected=true;
+        receiverChatUrl = safeChatUrl(packet.chatUrl || '');
+        const chatHint=el('#skr-chat-link-hint');if(chatHint)chatHint.textContent=receiverChatUrl?'iPadの会話が見つかったよ。タップで全文を開ける！':'iPadで会話を開いた状態で「iPadの会話を確認」を押してね。';
         updateStatus(firstAck?'iPadが応答したよ。下書きを確認するね。':'iPadから応答あり・接続を確認したよ。');
         if(firstAck && !pendingSend) sendDraft(true);
         refreshSendButton();
@@ -1604,6 +1613,11 @@
       const replyText=document.createElement('div');replyText.id='skr-reply';
       replyText.textContent=lastReplyText||'返信待ち。iPad側で共有をオンにすると取得できるよ。';reply.append(replyText);
       button(reply,'↻  最新の返信を取得',askForReply);
+      const chatOpen=button(reply,'↗  iPadと同じChatGPT会話を開く',()=>{
+        if(receiverChatUrl){window.open(receiverChatUrl,'_blank','noopener,noreferrer');}
+        else {probePeer();updateStatus('iPadに会話のリンクを問い合わせたよ。少し待ってもう一度押してね。');}
+      });chatOpen.id='skr-open-chat';
+      const chatHint=p('iPadから会話リンクを受け取ると、iPhoneで返信全文を開けるよ。',reply);chatHint.id='skr-chat-link-hint';
       const hint2=p('返信が届かない場合は、iPadの画面で返信をコピーし「コピーした返信をiPhoneへ転送」を使えるよ。',reply);
       hint2.className='skr-reply-hint';
       const diagnosis=details(reply,'返信の診断（原因を調べる）');
