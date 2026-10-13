@@ -710,7 +710,6 @@
       }
       const priorMessages = userMessages();
       const baselineReply = lastAssistantNode();
-      const beforeAssistantText=baselineReply?(baselineReply.innerText||baselineReply.textContent||'').trim():'';
       const beforeCount = priorMessages.length, beforeLast = priorMessages[beforeCount - 1];
       const beforeRenderedCount=countRenderedExactUserText(text);
       sendButton.click();
@@ -723,9 +722,7 @@
         const latest=lastAssistantNode();
         const afterText=latest?(latest.innerText||latest.textContent||'').trim():'';
         const emptyComposer=!!findEditor()&&!normalize(readEditor(findEditor())).trim();
-        verified=emptyComposer&&!!afterText&&
-          (latest!==baselineReply || afterText!==beforeAssistantText)&&
-          (userMessages().length>beforeCount || latest!==baselineReply || afterText.length>beforeAssistantText.length+8);
+        verified=emptyComposer&&!!afterText&&latest!==baselineReply;
       }
       if(!verified){
         // A blank composer can be temporary while ChatGPT/React re-renders.
@@ -1697,7 +1694,7 @@
   }
   function changed() {
     const typing=el('#skr-typing'); if(typing) saveDraft(typing.value);
-    refreshDraftCount();
+    refreshDraftCount();refreshSendButton();
     clearTimeout(typingTimer);
     if (!composition && !pendingSend) typingTimer = delay(() => sendDraft(), 550);
   }
