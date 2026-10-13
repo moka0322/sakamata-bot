@@ -1,4 +1,4 @@
-/* Remote Keyboard v1.9: local-only tools for standalone PWA */
+/* Remote Keyboard v1.11: secondary tools live below the compact composer */
 (()=>{
 "use strict";
 if(!window.__SKR_STANDALONE__)return;
@@ -156,20 +156,15 @@ async function checkRelayConnectivity(buttonEl, output) {
   }
 }
 function inject(){
- const c=document.querySelector("#skr-panel .skr-compose");
+ const c=document.querySelector("#skr-panel .skr-draft-tools-panel");
  if(!c||c.querySelector("#skr-extras"))return;
  const d=element("details",undefined,"skr-extras");d.id="skr-extras";
- d.append(element("summary","✦  便利ツール  /  履歴・定型文・バックアップ"));
+ d.append(element("summary","定型文・履歴・バックアップ"));
  const body=element("div",undefined,"skr-extras-body");d.append(body);
  const row=element("div",undefined,"skr-extras-buttons");body.append(row);
- row.append(button("文章をコピー",async()=>{
-  try{await navigator.clipboard.writeText(document.getElementById("skr-typing")?.value||"");info("コピーしたよ。")}
-  catch{info("コピーできなかったよ。ブラウザの権限を確認してね。",true)}
- }));
  const hWrap=element("div",undefined,"skr-extras-list");hWrap.hidden=true;hWrap.append(element("h4","最近の送信履歴"));
  const hList=element("div");hList.id="skr-extra-history";hWrap.append(hList);
  row.append(button("最近の履歴",()=>{hWrap.hidden=!hWrap.hidden;if(!hWrap.hidden)drawHistory(hList)}));
- row.append(button("下書き保存確認",()=>info("端末に"+(localStorage.getItem(keys.draft)||"").length+"文字の下書きを保存しているよ。")));
  body.append(hWrap,element("h4","よく使う文章"));
  const sList=element("div");sList.id="skr-extra-snippets";body.append(sList);drawSnippets(sList);
  const title=element("input");title.className="skr-extra-name";title.placeholder="定型文の名前";title.maxLength=24;
@@ -191,18 +186,21 @@ function inject(){
  const diagButton=button("通信診断 v2（読み取り・送信・受信）",()=>checkRelayConnectivity(diagButton,diagOutput));
  const diagOutput=element("pre","接続できない場合はここを押してね。下書きや接続コードは診断に送らないよ。");
  diagOutput.style.cssText="white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.6;padding:12px;border-radius:10px;background:#172031;color:#e9efff;margin:6px 0 0";
- body.append(diagButton,diagOutput);
+ const diag=element("details");diag.className="skr-extras-diagnostics";
+ diag.append(element("summary","通信トラブルの診断"),diagButton,diagOutput);body.append(diag);
  const message=element("p","下書き・履歴はこの端末内に保存するよ。接続コードは含まれないよ。");
  message.id="skr-extras-info";body.append(message);
- const before=c.querySelector("#skr-draft-count");if(before)c.insertBefore(d,before);else c.append(d);
+ c.append(d);
 }
 function network(){
  const p=document.getElementById("skr-panel");if(!p)return;
  let e=document.getElementById("skr-extra-network");
  if(!e){e=element("div",undefined,"skr-extra-network");e.id="skr-extra-network";
   const after=p.querySelector(".skr-connection-strip");if(after)after.after(e)}
- if(e){const s=navigator.onLine?"インターネット：接続あり（iPadの応答は上の表示を確認）":"インターネット：オフライン。文章は端末に保存されるよ。";
-   if(e.textContent!==s)e.textContent=s;e.dataset.offline=String(!navigator.onLine)}
+ if(e){const offline=!navigator.onLine;
+  e.hidden=!offline;
+  const s=offline?"インターネットがオフライン。下書きは保存されるよ。":"";
+  if(e.textContent!==s)e.textContent=s;e.dataset.offline=String(offline)}
 }
 let scheduled=false;const render=()=>{scheduled=false;inject();network()};
 new MutationObserver(()=>{if(!scheduled){scheduled=true;requestAnimationFrame(render)}}).observe(document.body,{subtree:true,childList:true});
