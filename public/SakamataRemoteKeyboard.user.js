@@ -1736,16 +1736,19 @@
     try {
       updateStatus('暗号化ファイルをダウンロード中…');
       const res = await gm({ method: 'GET', url, responseType: 'arraybuffer', timeout: 40000 });
+      if(epoch!==generation||mode!=='receive'||!allowed||sid!==currentSender)return;
       if (res.status !== 200) throw new Error('ダウンロードHTTP ' + res.status);
       if (!(res.response instanceof ArrayBuffer)) throw new Error('Safariの拡張機能がバイナリ通信に対応していない可能性があるよ');
       const packed = new Uint8Array(res.response);
       if (packed.length < 30 || packed.length > MAX_FILE_BYTES + 60) throw new Error('暗号化ファイルのサイズが正しくないよ');
       const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: packed.slice(0, 12) }, key, packed.slice(12));
+      if(epoch!==generation||mode!=='receive'||!allowed||sid!==currentSender)return;
       if (plain.byteLength !== size) throw new Error('受信ファイルのサイズが一致しないよ');
       // A second manual retry may carry a new transfer ID for the SAME
       // image. Compare locally computed hashes to avoid duplicate attachments.
       // Intentional reattachments become possible again after a short window.
       const hash=await plaintextDigest(plain);
+      if(epoch!==generation||mode!=='receive'||!allowed||sid!==currentSender)return;
       if(recordedFileOffer(id)||recordedImageDigest(hash)){
         rememberFileOffer(id);
         const dup='同じ写真・ファイルは最近受信済みだよ。更新や再送による重複添付を防いだよ（再添付が必要なら3分後に試してね）。';
@@ -1778,6 +1781,7 @@
       await report(msg);
     } catch (e) {
       completedFiles.delete(id); // A true transfer failure may be retried safely.
+      if(epoch!==generation)return;
       const msg = 'ファイル受信失敗：' + (e.message || String(e));
       updateStatus(msg, true); await report(msg);
     }
