@@ -5,12 +5,28 @@
 <meta name="apple-mobile-web-app-title" content="沙花叉入力">
 <meta name="description" content="iPhoneからiPadへ日本語入力する専用送信画面（試験版）">
 <link rel="manifest" href="./manifest.webmanifest"><link rel="apple-touch-icon" href="./icon-192.png">
-<title>沙花叉リモート入力</title>
+<title>沙花叉リモート入力</title><style>
+#skr-panel .skr-extras{margin:12px 0 16px;border:1px solid var(--ui-border,#665b73);background:color-mix(in srgb,var(--ui-card,#24283b) 79%,transparent);border-radius:17px;overflow:hidden}
+#skr-panel .skr-extras>summary{cursor:pointer;padding:13px 15px;color:var(--ui-text,#fff);font-weight:700;font-size:13px}
+#skr-panel .skr-extras-body{padding:0 13px 15px;display:grid;gap:10px}
+#skr-panel .skr-extras h4{color:var(--ui-muted,#ddd);font-size:12px;letter-spacing:.03em;margin:10px 0 0}
+#skr-panel .skr-extras-buttons{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+#skr-panel .skr-extras button{min-height:38px;border:1px solid var(--ui-border,#696076);background:var(--ui-layer,#323344);color:var(--ui-text,#fff);border-radius:11px;font-size:12px;padding:9px;white-space:normal;overflow-wrap:anywhere;text-align:left}
+#skr-panel .skr-extras .skr-extra-history-item{display:block;margin:5px 0;width:100%}
+#skr-panel .skr-extra-snippet-row{display:grid;grid-template-columns:1fr auto;gap:7px;margin:6px 0}
+#skr-panel .skr-extras .skr-extra-delete{background:#603949}
+#skr-panel .skr-extra-name{background:var(--ui-main,#1a202e);border:1px solid var(--ui-border,#655d75);color:var(--ui-text,#fff);font-size:13px;min-width:0;width:100%;box-sizing:border-box;border-radius:10px;padding:10px}
+#skr-panel #skr-extras-info{font-size:12px;color:var(--ui-muted,#ddd);margin:0}
+#skr-panel #skr-extras-info[data-bad="true"]{color:#ffbbc8}
+#skr-panel #skr-extra-network{text-align:center;color:var(--ui-muted,#ddd);font-size:10px;padding:0 5px 7px}
+#skr-panel #skr-extra-network[data-offline="true"]{color:#ffb8bd}
+@media(max-width:360px){#skr-panel .skr-extras-buttons{grid-template-columns:1fr}}
+</style>
 <style>html,body{margin:0;min-height:100%;background:#191827;color:#fdf5ff;font-family:-apple-system,BlinkMacSystemFont,sans-serif}#fallback{padding:40px 18px;color:#dcd2e6;max-width:570px;margin:auto}#fallback h1{font-size:24px}#fallback p{line-height:1.8;font-size:14px}</style>
 </head><body>
 <noscript>JavaScriptを有効にしてください。</noscript>
 <div id="fallback"><h1>⌨ 沙花叉リモート入力</h1><p>専用の送信画面を読み込んでいるよ。初めて使う場合はiPadに表示された接続コードを入力してね。</p></div>
 <script>window.__SKR_STANDALONE__=true;</script>
-<script src="./SakamataRemoteKeyboard.user.js"></script>
+<script src="./SakamataRemoteKeyboard.user.js"></script><script src="./enhancements.js"></script>
 <script>if('serviceWorker' in navigator && location.protocol==='https:'){navigator.serviceWorker.register('./sw.js').catch(()=>{});}</script>
 </body></html>
