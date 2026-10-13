@@ -69,7 +69,8 @@
 
   // Pairing usability. The generated code remains the same 12-character secret
   // as v1.8, so existing receivers and keys remain compatible.
-  const PAIR_APP_URL = 'https://sakamata-remote-keyboard.onrender.com/';
+  const PAIR_APP_URL = 'https://remote-input-bridge.onrender.com/';
+  const LEGACY_PAIR_ORIGIN = 'https://sakamata-remote-keyboard.onrender.com';
   function pairLink(value) {
     const u=new URL(PAIR_APP_URL);
     u.hash='pair='+encodeURIComponent(value);
@@ -79,7 +80,7 @@
     const raw=String(value||'').trim();
     try {
       const u=new URL(raw);
-      if (u.origin===new URL(PAIR_APP_URL).origin) {
+      if (u.origin===new URL(PAIR_APP_URL).origin || u.origin===LEGACY_PAIR_ORIGIN) {
         const pair=new URLSearchParams(u.hash.replace(/^#/,'')).get('pair');
         return pair && isValidCode(cleanCode(pair)) ? cleanCode(pair) : '';
       }
