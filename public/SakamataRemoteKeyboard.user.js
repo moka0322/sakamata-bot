@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Remote Keyboard
 // @namespace    https://chatgpt.com/
-// @version      1.12.1
+// @version      1.13.0
 // @description  iPhone/iPad遠隔入力：見やすい専用画面、安定した下書き同期、返信検出診断。
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -16,7 +16,7 @@
   if (document.getElementById('skr-launcher')) return;
   const STANDALONE = !!window.__SKR_STANDALONE__; // independently hosted sender webpage
 
-  const VERSION = '1.12.1';
+  const VERSION = '1.13.0';
   const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const CODE_LEN = 12;
   const MAX_TEXT = 900;
@@ -2006,6 +2006,7 @@
     const panel=el('#skr-panel');if(!panel)return;
     // Old preview nodes hold object URLs; the file selection itself remains in memory.
     panel.replaceChildren();
+    panel.dataset.mode=mode;
     const header=document.createElement('header');header.className='skr-header';
     const brand=document.createElement('div');brand.className='skr-brand';
     const symbol=document.createElement('span');symbol.className='skr-brand-icon';symbol.textContent='⌨';symbol.setAttribute('aria-hidden','true');
@@ -2018,7 +2019,26 @@
     const headerTools=document.createElement('div');headerTools.className='skr-header-actions';
     const themeSwitch=document.createElement('button');themeSwitch.id='skr-theme-switch';themeSwitch.className='skr-theme-switch';
     themeSwitch.type='button';themeSwitch.title='色を切り替える';themeSwitch.onclick=cycleTheme;
-    headerTools.append(themeSwitch,close);
+    headerTools.append(themeSwitch);
+    if(mode==='send'){
+      const settingsButton=document.createElement('button');
+      settingsButton.id='skr-settings-trigger';settingsButton.className='skr-settings-trigger';
+      settingsButton.type='button';settingsButton.textContent='⚙';
+      settingsButton.setAttribute('aria-label','設定・便利ツールを開く');
+      settingsButton.setAttribute('aria-controls','skr-settings-root');
+      settingsButton.setAttribute('aria-expanded','false');
+      settingsButton.addEventListener('click',()=>{
+        const root=el('#skr-settings-root');if(!root)return;
+        root.open=!root.open;
+        settingsButton.setAttribute('aria-expanded',String(root.open));
+        if(root.open){
+          // Scroll the settings into view without leaving the sender's fixed composer.
+          root.scrollIntoView({block:'start',behavior:'smooth'});
+        }
+      });
+      headerTools.append(settingsButton);
+    }
+    headerTools.append(close);
     header.append(brand,headerTools);panel.append(header);
     const connection=document.createElement('div');connection.className='skr-connection-strip';panel.append(connection);
     const label=document.createElement('span');label.id='skr-connection-state';label.className='skr-state-pill';connection.append(label);
@@ -2077,8 +2097,14 @@
     if(mode==='send') {
       // Compact composer stays visible; secondary actions live in a collapsible tool panel.
       const compose=document.createElement('section');compose.className='skr-card skr-compose';panel.append(compose);
-      const toolsPanel=details(panel,'⋯  ツール・設定');
+      const toolsPanel=details(panel,'便利ツール・設定');
+      toolsPanel.id='skr-settings-root';
       toolsPanel.classList.add('skr-draft-tools-panel');
+      panel.insertBefore(toolsPanel,compose);
+      toolsPanel.addEventListener('toggle',()=>{
+        const trigger=el('#skr-settings-trigger');
+        if(trigger)trigger.setAttribute('aria-expanded',String(toolsPanel.open));
+      });
       const l=document.createElement('label');l.textContent='01  /  iPhoneから入力';l.className='skr-step-label';l.htmlFor='skr-typing';compose.append(l);
       const typing=document.createElement('textarea');typing.id='skr-typing';typing.rows=5;typing.maxLength=MAX_TEXT;
       typing.placeholder='メッセージを入力';typing.value=sentText||restoreDraft();
@@ -2153,14 +2179,14 @@
       const likelyCheck=document.createElement('input');likelyCheck.type='checkbox';likelyCheck.checked=settings.autoClearLikely!==false;
       likelyCheck.addEventListener('change',()=>{settings.autoClearLikely=likelyCheck.checked;saveSettings();});
       likelyLabel.append(likelyCheck,document.createTextNode(' 送信操作でiPad入力欄が空になったら自動クリア（前回の文章に保存）'));toolsPanel.append(likelyLabel);
-      const conversation=document.createElement('section');conversation.className='skr-card skr-reply-wrap';panel.append(conversation);
-      const ct=document.createElement('h3');ct.textContent='02 / 返信は同じ会話で確認';conversation.append(ct);
-      const chatOpen=button(conversation,'↗  iPadと同じChatGPT会話を開く',()=>{
+      const conversation=document.createElement('div');conversation.className='skr-chat-link-row';connection.append(conversation);
+      const chatOpen=button(conversation,'↗  同じ会話を開く',()=>{
         if(receiverChatUrl){window.open(receiverChatUrl,'_blank','noopener,noreferrer');}
         else {probePeer();updateStatus('iPadに会話リンクを問い合わせたよ。少し待ってからもう一度押してね。');}
-      },true);chatOpen.id='skr-open-chat';
-      const chatHint=p('iPadから現在の会話リンクを受け取ると、ChatGPTの返信全文をiPhoneで開けるよ。',conversation);chatHint.id='skr-chat-link-hint';
-      const more=details(panel,'⚙  接続・詳細設定');
+      });chatOpen.id='skr-open-chat';chatOpen.title='ChatGPTの返信全文を開く';
+      const chatHint=p('会話リンクをiPadから取得中',conversation);chatHint.id='skr-chat-link-hint';chatHint.hidden=true;
+      const more=details(toolsPanel,'接続・詳細設定');
+      more.classList.add('skr-advanced-settings');
       const mediaSettings=details(more,'写真の画質設定');
       const photoLabel=document.createElement('label');photoLabel.textContent='送信する写真の画質';photoLabel.htmlFor='skr-photo-mode';mediaSettings.append(photoLabel);
       const modeSelect=document.createElement('select');modeSelect.id='skr-photo-mode';
@@ -2221,7 +2247,7 @@
       button(more,'端末の役割を変更',changeRole);
       button(more,'この端末の接続記憶を消す',forgetPair);
     }
-    const visuals = details(panel,'✦  表示・アニメーション');
+    const visuals = details(mode==='send'?el('#skr-settings-root'):panel,'表示・アニメーション');
     const tdesc=document.createElement('p');tdesc.textContent='見た目は両端末で別々に変更できるよ。内容や接続には影響しない。';visuals.append(tdesc);
     const themeGroup=document.createElement('div');themeGroup.className='skr-theme-grid';visuals.append(themeGroup);
     for(const [value,name] of [['aurora','オーロラ'],['lagoon','ラグーン'],['graphite','モノクロ']]) {
@@ -2236,7 +2262,8 @@
     }
     motionSelect.value=settings.motion||'system';motionSelect.addEventListener('change',()=>{settings.motion=motionSelect.value;saveSettings();applyAppearance();});
     visuals.append(motionSelect);
-    const small=document.createElement('small');small.textContent='v'+VERSION+'｜暗号化してntfy.shを経由。公開中継には一時保存と容量制限があるよ。機密情報は送らないでね。';panel.append(small);
+    const small=document.createElement('small');small.textContent='v'+VERSION+'｜暗号化してntfy.shを経由。公開中継には一時保存と容量制限があるよ。機密情報は送らないでね。';
+    (mode==='send'?el('#skr-settings-root'):panel).append(small);
     panel.scrollTop=0;
     applyAppearance();
     updateStatus(statusText,statusBad);
@@ -2591,6 +2618,58 @@
       border-radius:10px;margin:5px 0 1px}
     #skr-panel #skr-status[hidden],#skr-panel #skr-file-progress-quick[hidden]{display:none!important}
     #skr-panel .skr-compose{scrollbar-width:thin}
+  `;
+  css.textContent += `
+    /* v1.13 – quiet daily-use sender screen; preserve all functional IDs */
+    #skr-panel[data-mode="send"] .skr-mode-label,
+    #skr-panel[data-mode="send"] #skr-theme-switch{display:none!important}
+    #skr-panel[data-mode="send"] .skr-brand-icon{width:34px;height:34px;box-shadow:none}
+    #skr-panel[data-mode="send"] .skr-header{padding-top:5px!important;padding-bottom:8px!important;margin-bottom:9px!important}
+    #skr-panel[data-mode="send"] .skr-brand-lines>span{font-size:9px!important;letter-spacing:.08em}
+    #skr-panel[data-mode="send"] .skr-header strong{font-size:16px!important}
+    #skr-panel[data-mode="send"] button.skr-settings-trigger{
+      display:flex!important;align-items:center;justify-content:center;
+      min-width:38px!important;width:38px!important;min-height:38px!important;
+      height:38px!important;padding:0!important;margin:0!important;
+      border-radius:50%!important;border:1px solid var(--ui-border,#54737f)!important;
+      background:var(--ui-layer,#203744)!important;color:var(--ui-text,#e4fff3)!important;
+      font-size:21px!important;box-shadow:none!important
+    }
+    #skr-panel[data-mode="send"] .skr-connection-strip{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:0 0 12px!important}
+    #skr-panel[data-mode="send"] .skr-state-pill{font-size:12px;padding:6px 11px}
+    #skr-panel[data-mode="send"] .skr-chat-link-row{margin-left:auto;min-width:0}
+    #skr-panel[data-mode="send"] .skr-chat-link-row button{
+      display:inline-flex!important;align-items:center;justify-content:center;
+      width:auto!important;min-height:36px!important;margin:0!important;padding:7px 11px!important;
+      font-size:12px!important;border-radius:999px!important;line-height:1.25!important;
+      border:1px solid var(--ui-border,#59717e)!important;
+      background:var(--ui-layer,#253e4b)!important;color:var(--ui-text,#e8f9f2)!important;
+      box-shadow:none!important
+    }
+    #skr-panel[data-mode="send"] .skr-chat-link-row p[hidden]{display:none!important}
+    #skr-panel[data-mode="send"] #skr-settings-root:not([open]){display:none!important}
+    #skr-panel[data-mode="send"] #skr-settings-root{
+      margin:8px 0 20px!important;padding:12px!important;
+      border:1px solid var(--ui-border,#4a626b)!important;border-radius:16px!important;
+      background:var(--ui-card,#162b36)!important;scroll-margin-top:76px;
+      box-shadow:0 7px 22px #0002
+    }
+    #skr-panel[data-mode="send"] #skr-settings-root>summary{
+      font-size:13px!important;padding:6px!important
+    }
+    #skr-panel[data-mode="send"] #skr-settings-root>.skr-details{
+      margin:9px 0!important
+    }
+    #skr-panel[data-mode="send"] #skr-settings-root>small{
+      display:block;max-width:none;padding:12px 3px 3px;font-size:11px
+    }
+    #skr-panel[data-mode="send"] .skr-compose{
+      box-shadow:0 9px 26px #0005!important;
+    }
+    @media(max-width:350px){
+      #skr-panel[data-mode="send"] .skr-chat-link-row button{font-size:11px!important;padding:6px 9px!important}
+      #skr-panel[data-mode="send"] .skr-brand-icon{display:none!important}
+    }
   `;
   document.documentElement.append(css);
   const launcher = document.createElement('button'); launcher.id = 'skr-launcher'; launcher.textContent = '⌨'; launcher.title = 'リモート入力';
