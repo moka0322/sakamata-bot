@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sakamata Remote Keyboard
 // @namespace    https://chatgpt.com/
-// @version      1.8.0
+// @version      1.8.1
 // @description  iPhone/iPad遠隔入力：見やすい専用画面、安定した下書き同期、返信検出診断。
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -16,7 +16,7 @@
   if (document.getElementById('skr-launcher')) return;
   const STANDALONE = !!window.__SKR_STANDALONE__; // independently hosted sender webpage
 
-  const VERSION = '1.8.0';
+  const VERSION = '1.8.1';
   const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const CODE_LEN = 12;
   const MAX_TEXT = 900;
@@ -107,7 +107,7 @@
   let mode = 'choose', code = '', key = null, topicRoot = '', sessionId = '';
   let active = false, connected = false, allowed = false;
   let statusText = '未接続', statusBad = false, stream = null;
-  let fallbackTimer = 0, retryTimer = 0, pollingTimer = 0, pingTimer = 0, typingTimer = 0, verifyTimer = 0;
+  let fallbackTimer = 0, retryTimer = 0, pollingTimer = 0, parallelPollTimer = 0, pingTimer = 0, typingTimer = 0, verifyTimer = 0;
   let generation = 0, lastSeq = -1, seq = 0, lastApplied = null, currentSender = '', sentText = '', lastPublish = 0;
   let seenIds = new Set(), publishing = false, composition = false, pendingAuto = 0;
   let pendingSend = null, pendingSendTimer = 0, receiverSending = false, manualWatch = false;
@@ -131,6 +131,7 @@
   let pendingReply = null; // explicit, user-initiated reply request, with timeout
   let sendRescueTimers = []; // one-shot relay polling while waiting for a send receipt
   let lastReceiverAckAt = 0, lastInboundAt = 0, lastReceiverContactAt = 0, healthTimer = 0;
+  let relayPostAt = 0, relayPollAt = 0, relayError = '', handshakeStartAt = 0;
   let transportCycle = 0;
   const PEER_TIMEOUT_MS = 65000; // Don't call an old acknowledgement a live connection.
   const STREAM_IDLE_RESTART_MS = 65000;
@@ -299,8 +300,9 @@
     lastReceiverAckAt=0;lastInboundAt=0;lastReceiverContactAt=0;lastHealthProbeAt=0;lastWatchdogRestartAt=0;lastDraftAckSeq=0;++transportCycle;clearInterval(healthTimer);
     key = null; topicRoot = ''; currentSender = ''; lastSeq = -1; lastApplied = null; seq = 0;
     remoteShare = null; receiverChatUrl = ''; updateRemoteShareState();
+    relayPostAt = relayPollAt = handshakeStartAt = 0; relayError = '';
     seenIds.clear();
-    clearTimeout(fallbackTimer); clearTimeout(retryTimer); clearTimeout(pollingTimer);
+    clearTimeout(fallbackTimer); clearTimeout(retryTimer); clearTimeout(pollingTimer); clearTimeout(parallelPollTimer);
     clearInterval(pingTimer); clearTimeout(typingTimer); clearTimeout(verifyTimer); clearTimeout(pendingAuto);
     clearTimeout(pendingSendTimer); clearTimeout(replyTimer); replyBusy = false;
     if (pendingReply) clearTimeout(pendingReply.timer); pendingReply = null;
@@ -700,8 +702,10 @@
     const res = await gm({ method: 'POST', url: endpoint(direction), data: payload,
       headers: { 'Content-Type': 'text/plain; charset=utf-8', 'X-Priority': '1' }, timeout: 12000 });
     if (res.status < 200 || res.status >= 300) {
-      throw new Error('中継サービス HTTP ' + res.status + (res.status === 429 ? '（無料枠の制限）' : ''));
+      relayError = '中継への投稿 HTTP ' + res.status + (res.status === 429 ? '（無料枠の制限）' : '');
+      throw new Error(relayError);
     }
+    relayPostAt = now(); relayError = '';
   }
 
   function receiveOne(id, body, epoch) {
@@ -1415,6 +1419,45 @@
     tick();
   }
 
+  // Parallel lightweight polling during handshake and after idle periods.
+  // SSE can look open in iOS Safari while never delivering any complete message frames.
+  // Message IDs are deduplicated by receiveOne() to prevent duplicate sends.
+  function startParallelPoll(direction, epoch) {
+    clearTimeout(parallelPollTimer);
+    let cursor = String(Math.floor(now()/1000)-90);
+    let rounds = 0;
+    async function tick() {
+      if(epoch!==generation || !active || !key)return;
+      if(document.visibilityState==='hidden') {
+        parallelPollTimer=delay(tick,15000);return;
+      }
+      const waiting = (mode==='send' && !connected) ||
+        (mode==='receive' && (!connected || now()-lastReceiverContactAt>25000));
+      if(waiting){
+        try {
+          const url=endpoint(direction)+'/json?poll=1&since='+encodeURIComponent(cursor);
+          const r=await gm({method:'GET',url,responseType:'text',timeout:15000});
+          if(r.status!==200) throw new Error('HTTP '+r.status+(r.status===429?'（中継の利用制限）':''));
+          relayPollAt=now();relayError='';
+          for(const line of String(r.responseText||'').split('\n').filter(Boolean)) {
+            try {const m=JSON.parse(line);if(m.event==='message'){
+              if(m.id)cursor=m.id;
+              receiveOne(m.id,m.message,epoch);
+            }}catch(_){}
+          }
+          if(mode==='send'&&!connected && ++rounds===2 && epoch===generation)
+            updateStatus('中継へのアクセスは成功。でもiPadの応答がないよ。接続コードの一致とiPadの受信状態を確認してね。');
+        }catch(e){
+          relayError='中継からの受信確認：'+(e.message||String(e));
+          if(epoch===generation && !connected)updateStatus(relayError,true);
+        }
+      }
+      if(epoch===generation && active)
+        parallelPollTimer=delay(tick,rounds<4?9000:22000);
+    }
+    parallelPollTimer=delay(tick,5500);
+  }
+
   function startReceive(createNew = false) {
     disconnect(); mode = 'receive';
     code = createNew || !isValidCode(prefs.receiverCode) ? randomCode() : prefs.receiverCode;
@@ -1435,7 +1478,9 @@
     catch (e) { updateStatus('暗号化の準備ができないよ：' + e.message, true); return; }
     active = true; allowed = true; const epoch = generation;
     startHealthChecks();startReplyObserver();
-    updateStatus(lastApplied!==null ? '前回の途中入力を保持して、受信を再開中…' : (automatic?'受信を再開中…':'受信を開始中…')); listen('down', epoch);
+    updateStatus(lastApplied!==null ? '前回の途中入力を保持して、受信を再開中…' : (automatic?'受信を再開中…':'受信を開始中…'));
+    // Refresh the receiver button: the old 'allow receive' label was misleading even after activating.
+    draw(); listen('down', epoch);startParallelPoll('down', epoch);
   }
   async function startSend(value, automatic = false) {
     const parsed = cleanCode(value);
@@ -1448,7 +1493,7 @@
     sessionId = randomId(); active = true;
     const epoch = generation;
     updateStatus(automatic ? '前回のiPadに自動再接続中…' : 'iPadに接続中…');
-    listen('up', epoch);
+    listen('up', epoch);startParallelPoll('up', epoch);
     // Keep periodically verifying the *real* iPad response. A stored pairing
     // or successful relay POST is not a live connection acknowledgement.
     pingTimer=setInterval(()=>{
@@ -1558,6 +1603,8 @@
       const inbox=document.createElement('section');inbox.id='skr-received-files';panel.append(inbox);renderReceivedFiles();
       const advanced=details(panel,'⚙  接続・詳細設定');
       button(advanced,'接続コードを新しくする',()=>startReceive(true));
+      button(advanced,'受信通信を再起動',()=>{if(active){restartListenerIfStale(0);updateStatus('受信経路の再接続を試しているよ。');}else{allowReceive();}});
+      button(advanced,'通信診断を表示',()=>{updateStatus('受信処理：'+(active?'起動中':'停止中')+'／接続要求：'+(lastReceiverContactAt?'確認あり':'未確認')+'／中継への投稿：'+(relayPostAt?'成功':'未確認')+'／補助受信：'+(relayPollAt?'成功':'未確認')+(relayError?'／'+relayError:''));});
       button(advanced,'端末の役割を変更',changeRole);
       button(advanced,'この端末の接続記憶を消す',forgetPair);
     }
@@ -1650,7 +1697,8 @@
       const room=document.createElement('input');room.id='skr-room';room.value=pretty(code);room.placeholder='XXXX-XXXX-XXXX';
       room.autocapitalize='characters';room.autocomplete='off';more.append(room);
       button(more,active?'同じiPadへ再接続':'iPadへ接続',()=>startSend(room.value));
-      button(more,'接続を再確認（反応が止まったら）',()=>{restartListenerIfStale();probePeer();});
+      button(more,'接続を再確認（反応が止まったら）',()=>{restartListenerIfStale(0);probePeer();});
+      button(more,'通信診断を表示',()=>{updateStatus('中継投稿：'+(relayPostAt?'成功':'未確認')+'／中継受信：'+(relayPollAt?'成功':'未確認')+'／iPadの応答：'+(lastReceiverAckAt?'確認あり':'未確認')+(relayError?'／'+relayError:''));});
       button(more,'文章をもう一度同期',()=>sendDraft(true));
       button(more,'送信済みを確認してクリア',()=>{
         if(pendingSend){updateStatus('送信結果待ちだよ。少し待ってから確認してね。');return;}
