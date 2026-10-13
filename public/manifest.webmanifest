@@ -1,7 +1,7 @@
 {
   "id": "./",
-  "name": "沙花叉リモート入力",
-  "short_name": "沙花叉入力",
+  "name": "リモート入力",
+  "short_name": "リモート入力",
   "description": "iPhoneからiPadへ遠隔入力。履歴・定型文・下書きバックアップを備えた専用アプリ（試験版）",
   "start_url": "./",
   "scope": "./",
