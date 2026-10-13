@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Sakamata Remote Keyboard
+// @name         Remote Keyboard
 // @namespace    https://chatgpt.com/
 // @version      1.9.1
 // @description  iPhone/iPad遠隔入力：見やすい専用画面、安定した下書き同期、返信検出診断。
@@ -127,7 +127,7 @@
     const link=pairLink(code);
     if(typeof navigator.share==='function'){
       try{
-        await navigator.share({title:'沙花叉リモート入力 接続',url:link});
+        await navigator.share({title:'リモート入力 接続',url:link});
         updateStatus('共有先に接続リンクを渡したよ。iPhoneで開いて接続を確認してね。');
         return;
       }catch(e){if(e?.name==='AbortError')return;}
@@ -1337,8 +1337,9 @@
   // Binary content, original filename and media type are never sent to ntfy in plaintext.
   function updateFileProgress(message,bad=false) {
     fileTransferStage=message;fileTransferFailed=!!bad;
-    const node=el('#skr-file-progress');
-    if(node){node.textContent=message;node.dataset.error=String(bad);}
+    for(const selector of ['#skr-file-progress','#skr-file-progress-quick']){
+      const node=el(selector);if(node){node.textContent=message;node.dataset.error=String(bad);}
+    }
   }
   function cleanFilename(name) {
     return String(name || 'file').replace(/[\\/\x00-\x1f]/g, '_').slice(0, 120);
@@ -1618,7 +1619,7 @@
     try { await setupCrypto(code); }
     catch (e) { updateStatus('暗号化の準備ができないよ：' + e.message, true); return; }
     active = true; allowed = true; const epoch = generation;
-    startHealthChecks();startReplyObserver();
+    startHealthChecks(); // Reply scraping disabled: use same-conversation link instead.
     updateStatus(lastApplied!==null ? '前回の途中入力を保持して、受信を再開中…' : (automatic?'受信を再開中…':'受信を開始中…'));
     // Refresh the receiver button: the old 'allow receive' label was misleading even after activating.
     draw(); listen('down', epoch);startParallelPoll('down', epoch);
@@ -1707,7 +1708,7 @@
     const brand=document.createElement('div');brand.className='skr-brand';
     const symbol=document.createElement('span');symbol.className='skr-brand-icon';symbol.textContent='⌨';symbol.setAttribute('aria-hidden','true');
     const brandLines=document.createElement('div');brandLines.className='skr-brand-lines';
-    const title=document.createElement('strong');title.textContent='沙花叉リモート入力';
+    const title=document.createElement('strong');title.textContent='リモート入力';
     const subtitle=document.createElement('span');subtitle.textContent='REMOTE KEYBOARD  /  v'+VERSION;
     brandLines.append(title,subtitle);brand.append(symbol,brandLines);
     const close=document.createElement('button');close.textContent='×';close.className='skr-close';close.setAttribute('aria-label','専用画面を閉じる');
@@ -1746,23 +1747,7 @@
       if(active)button(card,'同期を再開（iPadの入力欄が空の場合）',resume,true);
       else button(card,'入力を許可して受信開始',()=>allowReceive(),true);
       button(card,'今の下書きをiPhoneの入力として引き継ぐ',adoptVisibleDraft);
-      const section=document.createElement('section');section.className='skr-card';panel.append(section);
-      const h=document.createElement('h3');h.textContent='02  /  返信の共有';section.append(h);
-      p('自分の返信をiPhoneでも読みたい場合だけオンにしてね。',section);
-      const share=button(section,'',toggleReplySharing);share.id='skr-share-toggle';share.className='skr-share-toggle';
-      const shareStatus=document.createElement('p');shareStatus.id='skr-share-status';shareStatus.setAttribute('aria-live','polite');section.append(shareStatus);
-      updateLocalShareState();
-      const manual=details(panel,'返信を自動取得できない場合');
-      button(manual,'◉  画面の返信をタップして選ぶ（おすすめ）',startReplyPicker,true);
-      p('今の画面で返信を直接選んで、内容を確認してからiPhoneに送るよ。自動取得が0件でも使える手動方式。',manual);
-      p('画面の返信文を長押しで選択したあと、下のボタンを押して転送できます。自動取得が難しい画面での代替手段です。',manual);
-      button(manual,'↗  コピーした返信をiPhoneへ転送',shareCopiedReply);
-      button(manual,'選択した返信文をiPhoneへ転送',shareSelectedReply);
-      const diagnose=details(panel,'返信・送信の診断（問題があるとき）');
-      p('返信がiPadに表示されているのに取得できない場合、こちらの数字を確認するよ。返信本文は表示しないよ。',diagnose);
-      const d=button(diagnose,'診断結果を表示・更新',showDiagnostics);
-      const insight=document.createElement('p');insight.id='skr-diagnostic-summary';insight.textContent='診断はまだ実行していません。';diagnose.append(insight);
-      const output=document.createElement('pre');output.id='skr-debug-output';output.style.cssText='white-space:pre-wrap;word-break:break-all;color:#eaf7fa;font-size:12px';diagnose.append(output);
+      p('返信を見るときは、iPhoneの「同じChatGPT会話を開く」を使ってね。',panel);
       const inbox=document.createElement('section');inbox.id='skr-received-files';panel.append(inbox);renderReceivedFiles();
       const advanced=details(panel,'⚙  接続・詳細設定');
       button(advanced,'接続コードを新しくする',()=>startReceive(true));
@@ -1792,7 +1777,9 @@
           target.scrollIntoView({block:'start',behavior:'smooth'});
         });quick.append(b);
       };
-      jump('✎ 入力','#skr-typing');jump('↩ 返信','.skr-reply-wrap');jump('▧ 写真','#skr-file-panel',true);
+      jump('✎ 入力','#skr-typing');jump('↩ 会話','.skr-reply-wrap');
+      const quickPhoto=button(quick,'▧ 写真を選ぶ',()=>el('#skr-photo-quick')?.click());
+      quickPhoto.classList.add('skr-quick-photo');
       const compose=document.createElement('section');compose.className='skr-card skr-compose';panel.append(compose);
       const l=document.createElement('label');l.textContent='01  /  iPhoneから入力';l.className='skr-step-label';l.htmlFor='skr-typing';compose.append(l);
       const typing=document.createElement('textarea');typing.id='skr-typing';typing.rows=5;typing.maxLength=MAX_TEXT;
@@ -1814,6 +1801,22 @@
       const undo = button(tools, '↶ 元に戻す（30秒）', undoEraseDraft);
       undo.id = 'skr-undo-erase'; undo.style.gridColumn = '1 / -1';
       undo.style.display = erasedDraft === null ? 'none' : 'block';
+      const photoRow=document.createElement('div');photoRow.className='skr-photo-shortcuts';compose.append(photoRow);
+      const photoInput=document.createElement('input');photoInput.type='file';photoInput.id='skr-photo-quick';photoInput.accept='image/*';photoInput.multiple=true;photoInput.className='skr-visually-hidden-file';compose.append(photoInput);
+      const documentInput=document.createElement('input');documentInput.type='file';documentInput.id='skr-document-quick';documentInput.accept='image/*,application/pdf,text/plain';documentInput.multiple=true;documentInput.className='skr-visually-hidden-file';compose.append(documentInput);
+      const handleQuickSelection=async input=>{
+        const selected=[...(input.files||[])].slice(0,4);input.value='';
+        if(!selected.length)return;
+        if(selected.length>1&&!window.confirm(selected.length+'件のファイルを送信する？（iPadの添付完了は別途確認が必要です）'))return;
+        for(const file of selected) await sendChosenFile(file);
+      };
+      photoInput.addEventListener('change',()=>handleQuickSelection(photoInput));
+      documentInput.addEventListener('change',()=>handleQuickSelection(documentInput));
+      button(photoRow,'▧ 写真を選んで送る',()=>photoInput.click());
+      button(photoRow,'↥ ファイルを選んで送る',()=>documentInput.click());
+      const quickProgress=document.createElement('div');quickProgress.id='skr-file-progress-quick';quickProgress.setAttribute('role','status');
+      quickProgress.textContent=fileTransferStage;quickProgress.dataset.error=String(fileTransferFailed);compose.append(quickProgress);
+      p('写真は選択後すぐ転送を開始するよ。ChatGPTへの添付完了はiPadで確認してね。',compose);
       const count = document.createElement('div');
       count.id = 'skr-draft-count'; count.className = 'skr-draft-count';
       count.textContent = typing.value.length + ' / ' + MAX_TEXT + ' 文字';
@@ -1826,25 +1829,13 @@
       const check=document.createElement('input');check.type='checkbox';check.checked=!!settings.confirm;
       check.addEventListener('change',()=>{settings.confirm=check.checked;saveSettings();});
       confirmLabel.append(check,document.createTextNode(' 送信前に確認する'));compose.append(confirmLabel);
-      const reply=document.createElement('section');reply.className='skr-card skr-reply-wrap';panel.append(reply);
-      const rh=document.createElement('div');rh.className='skr-card-title';const rt=document.createElement('strong');rt.textContent='02  /  iPadからの返信';
-      const time=document.createElement('span');time.id='skr-reply-time';rh.append(rt,time);reply.append(rh);
-      const share=p('');share.id='skr-remote-share-state';updateRemoteShareState();
-      reply.append(share);
-      const replyText=document.createElement('div');replyText.id='skr-reply';
-      replyText.textContent=lastReplyText||'返信待ち。iPad側で共有をオンにすると取得できるよ。';reply.append(replyText);
-      button(reply,'↻  最新の返信を取得',askForReply);
-      const chatOpen=button(reply,'↗  iPadと同じChatGPT会話を開く',()=>{
+      const conversation=document.createElement('section');conversation.className='skr-card skr-reply-wrap';panel.append(conversation);
+      const ct=document.createElement('h3');ct.textContent='02 / 返信は同じ会話で確認';conversation.append(ct);
+      const chatOpen=button(conversation,'↗  iPadと同じChatGPT会話を開く',()=>{
         if(receiverChatUrl){window.open(receiverChatUrl,'_blank','noopener,noreferrer');}
-        else {probePeer();updateStatus('iPadに会話のリンクを問い合わせたよ。少し待ってもう一度押してね。');}
-      });chatOpen.id='skr-open-chat';
-      const chatHint=p('iPadから会話リンクを受け取ると、iPhoneで返信全文を開けるよ。',reply);chatHint.id='skr-chat-link-hint';
-      const hint2=p('返信が届かない場合は、iPadの画面で返信をコピーし「コピーした返信をiPhoneへ転送」を使えるよ。',reply);
-      hint2.className='skr-reply-hint';
-      const diagnosis=details(reply,'返信の診断（原因を調べる）');
-      p('iPadの表示構造について件数だけ確認するよ。返信本文や接続コードは診断に送らないよ。',diagnosis);
-      button(diagnosis,'iPadの診断情報を取得',requestRemoteDiagnostics);
-      const result=document.createElement('p');result.id='skr-remote-debug';result.textContent='未診断';diagnosis.append(result);
+        else {probePeer();updateStatus('iPadに会話リンクを問い合わせたよ。少し待ってからもう一度押してね。');}
+      },true);chatOpen.id='skr-open-chat';
+      const chatHint=p('iPadから現在の会話リンクを受け取ると、ChatGPTの返信全文をiPhoneで開けるよ。',conversation);chatHint.id='skr-chat-link-hint';
       const filePanel=details(panel,'03  /  写真・ファイル（試験中）');filePanel.id='skr-file-panel';
       p('小さなファイル（1件約1.7MB以下）を選択。実際の添付完了はiPadで確認してね。',filePanel);
       const modeLabel=document.createElement('label');modeLabel.textContent='写真の画質';modeLabel.htmlFor='skr-photo-mode';filePanel.append(modeLabel);
@@ -2171,8 +2162,21 @@
     @media(max-width:500px){#skr-panel #skr-code{font-size:clamp(14px,4vw,23px)}}
   `;
 
+  css.textContent += `
+    #skr-panel .skr-photo-shortcuts{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:9px 0}
+    #skr-panel .skr-photo-shortcuts button{background:var(--ui-layer,#283642);color:var(--ui-text,#fff);
+      border:1px solid var(--ui-border,#506879);margin:0;padding:11px 5px;min-height:48px;font-size:13px}
+    #skr-panel .skr-visually-hidden-file{position:absolute!important;width:1px!important;height:1px!important;
+      padding:0!important;overflow:hidden!important;opacity:0!important;pointer-events:none!important;
+      clip-path:inset(50%)!important;margin:0!important}
+    #skr-panel #skr-file-progress-quick{font-size:12px;color:var(--ui-muted,#bcd0da);padding:3px 2px 8px;
+      overflow-wrap:anywhere;min-height:20px}
+    #skr-panel #skr-file-progress-quick[data-error="true"]{color:#fcaeae}
+    #skr-panel .skr-reply-wrap{padding-top:13px;padding-bottom:14px}
+    #skr-panel .skr-reply-wrap button.skr-primary{font-size:14px;min-height:44px}
+  `;
   document.documentElement.append(css);
-  const launcher = document.createElement('button'); launcher.id = 'skr-launcher'; launcher.textContent = '⌨'; launcher.title = '沙花叉リモート入力';
+  const launcher = document.createElement('button'); launcher.id = 'skr-launcher'; launcher.textContent = '⌨'; launcher.title = 'リモート入力';
   const panel = document.createElement('aside'); panel.id = 'skr-panel';
   document.body.append(launcher, panel);
   launcher.onclick = () => { panel.hidden = !panel.hidden; };
