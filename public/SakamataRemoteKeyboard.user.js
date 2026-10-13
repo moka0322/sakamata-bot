@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sakamata Remote Keyboard
 // @namespace    https://chatgpt.com/
-// @version      1.8.3
+// @version      1.8.4
 // @description  iPhone/iPad遠隔入力：見やすい専用画面、安定した下書き同期、返信検出診断。
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -16,7 +16,7 @@
   if (document.getElementById('skr-launcher')) return;
   const STANDALONE = !!window.__SKR_STANDALONE__; // independently hosted sender webpage
 
-  const VERSION = '1.8.3';
+  const VERSION = '1.8.4';
   const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const CODE_LEN = 12;
   const MAX_TEXT = 900;
@@ -133,6 +133,29 @@
   let lastReceiverAckAt = 0, lastInboundAt = 0, lastReceiverContactAt = 0, healthTimer = 0;
   let relayPostAt = 0, relayPollAt = 0, relayError = '', handshakeStartAt = 0;
   let incomingCount=0, decryptOkCount=0, decryptFailCount=0, helloCount=0, ackSentCount=0;
+  let pollEvents=0,pollTextBytes=0,pollMessageRows=0,pollParseFailures=0,rxSseEvents=0;
+  function relayBody(res) {
+    // Userscripts GM transport can expose text in either responseText or response.
+    return typeof res?.responseText==='string' && res.responseText.length ? res.responseText :
+      (typeof res?.response==='string'?res.response:'');
+  }
+  function channelCheck() { return topicRoot?topicRoot.slice(-4).toUpperCase():'未設定'; }
+  function scanNtfyLines(raw,epoch,updateCursor) {
+    let total=0,bad=0,last='';
+    for(const row of String(raw||'').split(/\r?\n/)){
+      if(!row.trim())continue;
+      try{
+        const m=JSON.parse(row);
+        if(m.event==='message' && typeof m.message==='string'){
+          total++;last=m.id||last;receiveOne(m.id,m.message,epoch);
+        }
+      }catch(_){bad++}
+    }
+    pollEvents++;pollTextBytes+=String(raw||'').length;
+    pollMessageRows+=total;pollParseFailures+=bad;
+    if(last&&typeof updateCursor==='function')updateCursor(last);
+    return {total,bad};
+  }
   let transportCycle = 0;
   const PEER_TIMEOUT_MS = 65000; // Don't call an old acknowledgement a live connection.
   const STREAM_IDLE_RESTART_MS = 65000;
@@ -303,6 +326,7 @@
     remoteShare = null; receiverChatUrl = ''; updateRemoteShareState();
     relayPostAt = relayPollAt = handshakeStartAt = 0; relayError = '';
     incomingCount=decryptOkCount=decryptFailCount=helloCount=ackSentCount=0;
+    pollEvents=pollTextBytes=pollMessageRows=pollParseFailures=rxSseEvents=0;
     seenIds.clear();
     clearTimeout(fallbackTimer); clearTimeout(retryTimer); clearTimeout(pollingTimer); clearTimeout(parallelPollTimer);
     clearInterval(pingTimer); clearTimeout(typingTimer); clearTimeout(verifyTimer); clearTimeout(pendingAuto);
@@ -1377,7 +1401,7 @@
         const frame = pending.slice(0, match.index); pending = pending.slice(match.index + match[0].length);
         const data = frame.split(/\r?\n/).filter(l => l.startsWith('data:')).map(l => l.slice(5).trim()).join('');
         if (!data) continue;
-        try { const m = JSON.parse(data); if (m.event === 'message') { gotMessage=true;receiveOne(m.id, m.message, epoch); } } catch (_) {}
+        try { const m = JSON.parse(data); if (m.event === 'message') { gotMessage=true;rxSseEvents++;receiveOne(m.id, m.message, epoch); } } catch (_) {}
       }
       if (pending.length > 50000) pending = pending.slice(-5000);
     }
@@ -1416,9 +1440,7 @@
       try {
         const res = await gm({ method: 'GET', url: endpoint(direction) + '/json?poll=1&since=' + encodeURIComponent(since), responseType: 'text', timeout: 15000 });
         if (res.status !== 200) throw new Error('HTTP ' + res.status);
-        for (const line of String(res.responseText || '').split('\n').filter(Boolean)) {
-          try { const m = JSON.parse(line); if (m.event === 'message') { receiveOne(m.id, m.message, epoch); since = m.id; } } catch (_) {}
-        }
+        scanNtfyLines(relayBody(res),epoch,id=>{since=id});
       } catch (e) { if (epoch === generation) updateStatus('中継の通信に失敗：' + e.message, true); }
       if (epoch === generation&&cycle===transportCycle) pollingTimer = delay(tick, 8500);
     }
@@ -1445,12 +1467,7 @@
           const r=await gm({method:'GET',url,responseType:'text',timeout:15000});
           if(r.status!==200) throw new Error('HTTP '+r.status+(r.status===429?'（中継の利用制限）':''));
           relayPollAt=now();relayError='';
-          for(const line of String(r.responseText||'').split('\n').filter(Boolean)) {
-            try {const m=JSON.parse(line);if(m.event==='message'){
-              if(m.id)cursor=m.id;
-              receiveOne(m.id,m.message,epoch);
-            }}catch(_){}
-          }
+          scanNtfyLines(relayBody(r),epoch,id=>{cursor=id});
           if(mode==='send'&&!connected && ++rounds===2 && epoch===generation)
             updateStatus('中継へのアクセスは成功。でもiPadの応答がないよ。接続コードの一致とiPadの受信状態を確認してね。');
         }catch(e){
@@ -1610,7 +1627,18 @@
       const advanced=details(panel,'⚙  接続・詳細設定');
       button(advanced,'接続コードを新しくする',()=>startReceive(true));
       button(advanced,'受信通信を再起動',()=>{if(active){restartListenerIfStale(0);updateStatus('受信経路の再接続を試しているよ。');}else{allowReceive();}});
-      button(advanced,'通信診断を表示',()=>{updateStatus('受信：'+(active?'起動中':'停止中')+'／中継GET：'+(relayPollAt?'成功':'未確認')+'／暗号化メッセージ：'+incomingCount+'件／復号：'+decryptOkCount+'件／復号失敗：'+decryptFailCount+'件／接続要求：'+helloCount+'件／応答送信：'+ackSentCount+'件'+(relayError?'／'+relayError:''));});
+      button(advanced,'通信診断を表示',()=>{updateStatus('通信先照合：'+channelCheck()+'／受信：'+(active?'起動中':'停止中')+'／中継GET：'+(relayPollAt?'成功':'未確認')+'／取得文字数：'+pollTextBytes+'／メッセージ行：'+pollMessageRows+'／JSON解析失敗：'+pollParseFailures+'／SSE受信：'+rxSseEvents+'／暗号化受信：'+incomingCount+'／復号：'+decryptOkCount+'／復号失敗：'+decryptFailCount+'／接続要求：'+helloCount+'／応答：'+ackSentCount+(relayError?'／'+relayError:''));});
+      button(advanced,'中継の最新メッセージを再確認（投稿しない）',async()=>{
+        if(!active||!key){updateStatus('先に受信を開始してね。',true);return;}
+        const epoch=generation;
+        updateStatus('最新の中継メッセージを調査中…');
+        try{
+          const r=await gm({method:'GET',url:endpoint('down')+'/json?poll=1&since=5m',responseType:'text',timeout:16000});
+          if(r.status!==200)throw Error('HTTP '+r.status);
+          const result=scanNtfyLines(relayBody(r),epoch);
+          updateStatus('通信先：'+channelCheck()+'／直近5分：'+result.total+'件／取得文字数：'+relayBody(r).length+'／JSON解析失敗：'+result.bad+'件／暗号化受信：'+incomingCount+'件／復号：'+decryptOkCount+'件。しばらく後に診断をもう一度確認してね。');
+        }catch(e){updateStatus('最新メッセージの確認失敗：'+(e.message||e),true)}
+      });
       button(advanced,'端末の役割を変更',changeRole);
       button(advanced,'この端末の接続記憶を消す',forgetPair);
     }
@@ -1716,7 +1744,7 @@
           else updateStatus('接続診断：確認信号の中継送信も未確認。'+(relayError||'通信診断v2で中継の状態を確認してね。'),true);
         },25000);
       });
-      button(more,'通信診断を表示',()=>{updateStatus('中継投稿：'+(relayPostAt?'成功':'未確認')+'／中継受信：'+(relayPollAt?'成功':'未確認')+'／iPadの応答：'+(lastReceiverAckAt?'確認あり':'未確認')+(relayError?'／'+relayError:''));});
+      button(more,'通信診断を表示',()=>{updateStatus('通信先照合：'+channelCheck()+'／中継投稿：'+(relayPostAt?'成功':'未確認')+'／中継受信：'+(relayPollAt?'成功':'未確認')+'／iPad応答：'+(lastReceiverAckAt?'あり':'未確認')+'／受信行数：'+pollMessageRows+(relayError?'／'+relayError:''));});
       button(more,'文章をもう一度同期',()=>sendDraft(true));
       button(more,'送信済みを確認してクリア',()=>{
         if(pendingSend){updateStatus('送信結果待ちだよ。少し待ってから確認してね。');return;}
