@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Remote Keyboard
 // @namespace    https://chatgpt.com/
-// @version      1.10.1
+// @version      1.11.0
 // @description  iPhone/iPad遠隔入力：見やすい専用画面、安定した下書き同期、返信検出診断。
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -16,7 +16,7 @@
   if (document.getElementById('skr-launcher')) return;
   const STANDALONE = !!window.__SKR_STANDALONE__; // independently hosted sender webpage
 
-  const VERSION = '1.10.1';
+  const VERSION = '1.11.0';
   const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const CODE_LEN = 12;
   const MAX_TEXT = 900;
@@ -223,7 +223,8 @@
   let generation = 0, lastSeq = -1, seq = 0, lastApplied = null, currentSender = '', sentText = '', lastPublish = 0;
   let seenIds = new Set(), publishing = false, composition = false, pendingAuto = 0;
   let pendingSend = null, pendingSendTimer = 0, receiverSending = false, manualWatch = false;
-  let ambiguousSendText = ''; // Unverified send never automatically deletes a draft.
+  let ambiguousSendText = ''; // Failed or ambiguous sends never automatically erase drafts.
+  let recentlySentText='',restoreRecentTimer=0;
   const completedRequests = new Set(), completedFiles = new Set();
   const latestReceipt = new Map(), receivedFiles = new Map();
   let sendingFile = false;
@@ -380,6 +381,33 @@
     if (e) {e.textContent=text.length>260?text.slice(0,240)+'…（詳細は接続設定で確認）':text;e.dataset.error=String(bad);}
     updateConnectionBadge();
     refreshSendButton();
+  }
+  function showRestoreRecent(value){
+    clearTimeout(restoreRecentTimer);
+    recentlySentText=value;
+    const b=el('#skr-restore-recent');
+    if(!b)return;
+    b.hidden=!value;
+    if(!value)return;
+    restoreRecentTimer=delay(()=>{
+      recentlySentText='';
+      const current=el('#skr-restore-recent');
+      if(current)current.hidden=true;
+    },20000);
+  }
+  function restoreRecentText(){
+    if(!recentlySentText)return;
+    const typing=el('#skr-typing');
+    if(!typing)return;
+    if(typing.value.trim()&&!window.confirm('今入力中の文章を、直前に送った文章で上書きする？'))return;
+    typing.value=recentlySentText;
+    clearTimeout(restoreRecentTimer);
+    recentlySentText='';
+    const btn=el('#skr-restore-recent');if(btn)btn.hidden=true;
+    sentText=typing.value;
+    changed();
+    updateStatus('直前の文章を戻したよ。すでに送ったメッセージは取り消されていないよ。');
+    typing.focus();
   }
   function refreshSendButton() {
     const b=el('#skr-remote-send');
@@ -794,6 +822,7 @@
       sentText = '';
       saveDraft('');
       clearTimeout(typingTimer);refreshDraftCount();
+      showRestoreRecent(original);
     }
     const note = packet.verified === false
       ? 'iPadの送信操作が完了したよ。投稿完了は未確認なので、届いていなければ「前回の文章」で復元してね。'
@@ -1730,6 +1759,11 @@
   function changed() {
     const typing=el('#skr-typing'); if(typing) saveDraft(typing.value);
     refreshDraftCount();refreshSendButton();
+    if(el('#skr-typing')?.value.trim() && recentlySentText){
+      clearTimeout(restoreRecentTimer);
+      recentlySentText='';
+      const btn=el('#skr-restore-recent');if(btn)btn.hidden=true;
+    }
     clearTimeout(typingTimer);
     if (!composition && !pendingSend) typingTimer = delay(() => sendDraft(), 550);
   }
@@ -1786,6 +1820,11 @@
     const label=document.createElement('span');label.id='skr-connection-state';label.className='skr-state-pill';connection.append(label);
     const modeLabel=document.createElement('span');modeLabel.className='skr-mode-label';modeLabel.textContent=mode==='send'?'送信モード':mode==='receive'?'受信モード':'初期設定';connection.append(modeLabel);
     const status=document.createElement('p');status.id='skr-status';status.setAttribute('role','status');
+    status.setAttribute('tabindex','0');status.setAttribute('aria-label','状態メッセージ。タップすると全文を表示');
+    status.title='タップで表示を広げる';
+    const toggleStatus=()=>{status.dataset.expanded=status.dataset.expanded==='true'?'false':'true';};
+    status.addEventListener('click',toggleStatus);
+    status.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();toggleStatus();}});
     status.textContent=statusText;status.dataset.error=String(statusBad);panel.append(status);
     const p=(text,into=panel)=>{const e=document.createElement('p');e.textContent=text;into.append(e);return e;};
     if(mode==='choose') {
@@ -1834,7 +1873,7 @@
     if(mode==='send') {
       // Compact composer stays visible; secondary actions live in a collapsible tool panel.
       const compose=document.createElement('section');compose.className='skr-card skr-compose';panel.append(compose);
-      const toolsPanel=details(panel,'⋯  履歴・下書きの管理');
+      const toolsPanel=details(panel,'⋯  ツール・設定');
       toolsPanel.classList.add('skr-draft-tools-panel');
       const l=document.createElement('label');l.textContent='01  /  iPhoneから入力';l.className='skr-step-label';l.htmlFor='skr-typing';compose.append(l);
       const typing=document.createElement('textarea');typing.id='skr-typing';typing.rows=5;typing.maxLength=MAX_TEXT;
@@ -1889,6 +1928,8 @@
       refreshSendButton();
       const confirmPosted=button(compose,'✓  送信済みを確認してクリア',confirmPostedAndClear);
       confirmPosted.id='skr-confirm-posted';refreshSendButton();
+      const recent=button(compose,'↶  直前の文章を戻す（20秒）',restoreRecentText);
+      recent.id='skr-restore-recent';recent.hidden=true;
       const hint=p('接続が切れたら下書きは保持するよ。送信結果が不明な場合は二重送信しないでね。',toolsPanel);
       hint.className='skr-draft-hint';
       const confirmLabel=document.createElement('label');confirmLabel.className='skr-choice';
@@ -1957,11 +1998,6 @@
       });
       button(more,'通信診断を表示',()=>{updateStatus('通信先照合：'+channelCheck()+'／中継投稿：'+(relayPostAt?'成功':'未確認')+'／中継受信：'+(relayPollAt?'成功':'未確認')+'／iPad応答：'+(lastReceiverAckAt?'あり':'未確認')+'／受信行数：'+pollMessageRows+(relayError?'／'+relayError:''));});
       button(more,'文章をもう一度同期',()=>sendDraft(true));
-      button(more,'未送信の下書きを消去（iPadにも反映）',()=>{
-        if(pendingSend){updateStatus('送信結果待ちだよ。');return;}
-        if(typing.value&&!window.confirm('iPadとiPhoneの未送信下書きを消す？'))return;
-        typing.value='';saveDraft('');sendDraft(true);
-      });
       const focus=button(more,focusMode?'小窓に戻す':'専用入力画面',()=>switchFocus());focus.id='skr-focus-toggle';
       if(!STANDALONE){
         const auto=document.createElement('label');auto.className='skr-choice';
@@ -2293,6 +2329,25 @@
         left:50%!important;right:auto!important;width:min(720px,calc(100vw - 40px))!important;
         transform:translateX(-50%)!important}
     }
+  `;
+  css.textContent += `
+    /* v1.11: keep send controls minimal; diagnostics and extras live in collapsed tools */
+    #skr-panel .skr-draft-tools-panel .skr-extras{margin:8px 0!important}
+    #skr-panel #skr-status{font-size:11px!important;line-height:1.5!important;
+      padding:7px 10px!important;max-height:40px;overflow:hidden!important;cursor:pointer}
+    #skr-panel #skr-status[data-expanded="true"]{max-height:none!important;overflow:visible!important}
+    #skr-panel #skr-status[data-error="true"]{max-height:54px}
+    #skr-panel #skr-status[data-error="true"][data-expanded="true"]{max-height:none}
+    #skr-panel #skr-restore-recent{width:100%!important;min-height:34px!important;
+      margin:5px 0 0!important;padding:7px!important;font-size:12px!important;
+      border:1px solid var(--ui-border,#56778a)!important;background:var(--ui-layer,#203644)!important;
+      color:var(--ui-text,#eef)!important;border-radius:12px!important}
+    #skr-panel #skr-restore-recent[hidden]{display:none!important}
+    #skr-panel .skr-draft-tools-panel>.skr-extras{padding:0 8px 9px}
+    #skr-panel .skr-extras-diagnostics{border:1px solid var(--ui-border,#435667);
+      padding:4px 10px;margin:8px 0;border-radius:10px}
+    #skr-panel .skr-extras-diagnostics>summary{padding:10px 0;cursor:pointer;font-size:12px}
+    #skr-panel .skr-extra-network[hidden]{display:none!important}
   `;
   document.documentElement.append(css);
   const launcher = document.createElement('button'); launcher.id = 'skr-launcher'; launcher.textContent = '⌨'; launcher.title = 'リモート入力';
