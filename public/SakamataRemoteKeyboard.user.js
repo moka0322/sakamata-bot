@@ -519,19 +519,22 @@
     // A text editor returning true does not prove that React adopted the update.
     // ACK only after checking the actual iPad composer after its render cycle.
     const epoch=generation;
-    verifyTimer=delay(()=>{
+    const verifyApplied=(attempt)=>{
       if(epoch!==generation||mode!=='receive'||sid!==currentSender||lastSeq!==n)return;
       const latest=findEditor(), actual=latest?normalize(readEditor(latest)):null;
       if(actual===normalize(text)){
         recordOwnedDraft(text);
         updateStatus(text.length?'iPhoneの下書きを反映したよ：'+text.length+'文字':'iPadの入力欄も空になったよ');
         publish('up',{type:'draft_ack',sid,seq:n,length:text.length},epoch).catch(()=>{});
+      }else if(attempt<2){
+        // Give React/Safari time to commit changes; never overwrite an unrelated draft.
+        verifyTimer=delay(()=>verifyApplied(attempt+1),700);
       }else{
-        // Preserve existing user text; do not invent an ACK or overwrite it again.
         if(actual && actual.trim() && actual!==normalize(text))allowed=false;
         updateStatus('iPadの表示が同期内容と一致しないよ。文章を保持して、復旧操作を待ってるね。',true);
       }
-    },650);
+    };
+    verifyTimer=delay(()=>verifyApplied(0),420);
   }
 
 
@@ -698,14 +701,11 @@
       const verified = await awaitChatSubmission(text, beforeCount, beforeLast, epoch, 17000, beforeRenderedCount);
       if (epoch !== generation) return;
       if (!verified) {
-        // Mark as *unverified accepted*, not confirmed: we invoked ChatGPT's
-        // Send button and its editor is now blank. The iPhone may clear its
-        // live typing box but keeps a restore point in local history.
+        // A blank composer can be temporary while ChatGPT/React re-renders.
+        // Never erase the sender's only draft without seeing a posted user turn.
         if (await editorStayedEmpty(epoch)) {
-          lastApplied = null;recordOwnedDraft('');
-          clearTimeout(verifyTimer);
-          await reply(true, 'iPadの送信欄が空になったよ。投稿履歴はiPadで確認してね。', false);
-          updateStatus('送信操作後に入力欄が空になったよ（投稿完了は未確認）。');
+          await reply(false, 'iPad入力欄は空に見えるけど、投稿を確認できなかったよ。iPhoneの下書きは保持したよ。送信済みかiPadで確認してね。', false);
+          updateStatus('投稿の成功を確認できなかったよ。iPhoneの下書きを保持したよ。',true);
           return;
         }
         await reply(false, '投稿確認ができず、iPadの入力欄にも文章が残っている可能性があるよ。iPadで確かめてね。二重送信は禁止。');
