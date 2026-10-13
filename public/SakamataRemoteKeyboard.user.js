@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Remote Keyboard
 // @namespace    https://chatgpt.com/
-// @version      1.12.0
+// @version      1.12.1
 // @description  iPhone/iPad遠隔入力：見やすい専用画面、安定した下書き同期、返信検出診断。
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -16,7 +16,7 @@
   if (document.getElementById('skr-launcher')) return;
   const STANDALONE = !!window.__SKR_STANDALONE__; // independently hosted sender webpage
 
-  const VERSION = '1.12.0';
+  const VERSION = '1.12.1';
   const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const CODE_LEN = 12;
   const MAX_TEXT = 900;
@@ -27,6 +27,9 @@
   const HISTORY_STORAGE = 'skr-history-v07';
   const SETTINGS_STORAGE = 'skr-settings-v07';
   const OWNED_DRAFT_STORAGE = 'skr-receiver-owned-draft-v13';
+  const FILE_DEDUP_STORAGE = 'skr-received-file-ids-v1';
+  const FILE_DEDUP_WINDOW_MS = 10 * 60 * 1000; // Relay replay can outlive a Safari refresh.
+  const CONTENT_DEDUP_WINDOW_MS = 3 * 60 * 1000; // Suppress accidental repeat uploads.
   const REPLY_LIMIT = 500; // preview only; keep ntfy messages within the free service size limit
   const safeStorage = (k, fallback = '') => { try { return localStorage.getItem(k) ?? fallback; } catch (_) { return fallback; } };
   const putStorage = (k,v) => { try { localStorage.setItem(k, v); return true; } catch (_) { return false; } };
@@ -1673,10 +1676,57 @@
       });
     }
   }
+  // Persist only opaque transfer IDs and SHA-256 digests, never the user's
+  // filenames, image bytes or message content. Scope to the same ChatGPT chat.
+  function readFileLedger() {
+    let stored;
+    try {stored=JSON.parse(safeStorage(FILE_DEDUP_STORAGE,'{}'));}catch(_){stored={};}
+    const context=ownedContext();
+    const fresh=stored && stored.context===context && stored.code===code ? stored : {};
+    const time=now();
+    const entries=Array.isArray(fresh.ids)?fresh.ids:[];
+    const hashes=Array.isArray(fresh.hashes)?fresh.hashes:[];
+    return {
+      ids:entries.filter(x=>typeof x?.id==='string'&&Number.isSafeInteger(x.t)&&time-x.t>=0&&time-x.t<FILE_DEDUP_WINDOW_MS).slice(-70),
+      hashes:hashes.filter(x=>typeof x?.hash==='string'&&Number.isSafeInteger(x.t)&&time-x.t>=0&&time-x.t<CONTENT_DEDUP_WINDOW_MS).slice(-35),
+      context,code
+    };
+  }
+  function saveFileLedger(ledger) {
+    putStorage(FILE_DEDUP_STORAGE,JSON.stringify({
+      context:ledger.context,code:ledger.code,ids:ledger.ids.slice(-70),hashes:ledger.hashes.slice(-35)
+    }));
+  }
+  function recordedFileOffer(id) {
+    const ledger=readFileLedger();
+    return ledger.ids.some(x=>x.id===id);
+  }
+  function recordedImageDigest(hash) {
+    const ledger=readFileLedger();
+    return ledger.hashes.some(x=>x.hash===hash);
+  }
+  function rememberFileOffer(id,hash='') {
+    const ledger=readFileLedger(),time=now();
+    ledger.ids=ledger.ids.filter(x=>x.id!==id);
+    ledger.ids.push({id,t:time});
+    if(hash){
+      ledger.hashes=ledger.hashes.filter(x=>x.hash!==hash);
+      ledger.hashes.push({hash,t:time});
+    }
+    saveFileLedger(ledger);
+  }
+  async function plaintextDigest(bytes) {
+    const buffer=await crypto.subtle.digest('SHA-256',bytes);
+    return [...new Uint8Array(buffer)].map(b=>b.toString(16).padStart(2,'0')).join('');
+  }
   async function handleFileOffer(packet, epoch) {
     const { sid, id, url, name, mime, size } = packet;
     if (epoch !== generation || mode !== 'receive' || !allowed || sid !== currentSender) return;
     if (typeof id !== 'string' || id.length > 80 || completedFiles.has(id)) return;
+    if(recordedFileOffer(id)){
+      updateStatus('すでに受信した写真・ファイルの再配信を検出したので、重複添付を防いだよ。');
+      return;
+    }
     let safeURL = false;
     try { const parsed = new URL(url); safeURL = parsed.protocol === 'https:' && parsed.hostname === 'ntfy.sh' && !parsed.username && !parsed.password; } catch (_) {}
     if (!safeURL || typeof name !== 'string' ||
@@ -1692,17 +1742,42 @@
       if (packed.length < 30 || packed.length > MAX_FILE_BYTES + 60) throw new Error('暗号化ファイルのサイズが正しくないよ');
       const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: packed.slice(0, 12) }, key, packed.slice(12));
       if (plain.byteLength !== size) throw new Error('受信ファイルのサイズが一致しないよ');
+      // A second manual retry may carry a new transfer ID for the SAME
+      // image. Compare locally computed hashes to avoid duplicate attachments.
+      // Intentional reattachments become possible again after a short window.
+      const hash=await plaintextDigest(plain);
+      if(recordedFileOffer(id)||recordedImageDigest(hash)){
+        rememberFileOffer(id);
+        const dup='同じ写真・ファイルは最近受信済みだよ。更新や再送による重複添付を防いだよ（再添付が必要なら3分後に試してね）。';
+        updateStatus(dup);
+        await report(dup);
+        return;
+      }
       const file = new File([plain], cleanFilename(name), { type: mime });
       receivedFiles.set(id, file);
       if (receivedFiles.size > 3) receivedFiles.delete(receivedFiles.keys().next().value);
       renderReceivedFiles();
+      // Mark an attempt BEFORE calling the ChatGPT input's change handler;
+      // Safari reload can otherwise replay the offer as another attachment.
+      // If no input exists, no actual attachment was tried, so don't commit.
+      const attachAvailable=[...document.querySelectorAll('input[type="file"]')]
+        .some(e=>e.accept===''||e.accept.includes('image')||e.accept.includes('.pdf')||e.multiple);
+      if(attachAvailable)rememberFileOffer(id,hash);
       const attempted = tryAttach(file);
+      if(!attempted&&attachAvailable){
+        // Change dispatch failed: permit another try after reload.
+        const ledger=readFileLedger();
+        ledger.ids=ledger.ids.filter(x=>x.id!==id);
+        ledger.hashes=ledger.hashes.filter(x=>x.hash!==hash);
+        saveFileLedger(ledger);
+      }
       const msg = attempted
         ? 'ファイル受信・復号は成功。ChatGPTへの添付操作を開始したよ。実際の添付完了はiPadの表示で確認してね（未検証）。'
         : 'ファイル受信・復号は成功！ChatGPTの添付欄が見つからないよ。iPad側のパネルで保存・手動添付してね。';
       updateStatus(msg, !attempted);
       await report(msg);
     } catch (e) {
+      completedFiles.delete(id); // A true transfer failure may be retried safely.
       const msg = 'ファイル受信失敗：' + (e.message || String(e));
       updateStatus(msg, true); await report(msg);
     }
