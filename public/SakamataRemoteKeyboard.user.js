@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Remote Keyboard
 // @namespace    https://chatgpt.com/
-// @version      1.11.0
+// @version      1.12.0
 // @description  iPhone/iPad遠隔入力：見やすい専用画面、安定した下書き同期、返信検出診断。
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -16,7 +16,7 @@
   if (document.getElementById('skr-launcher')) return;
   const STANDALONE = !!window.__SKR_STANDALONE__; // independently hosted sender webpage
 
-  const VERSION = '1.11.0';
+  const VERSION = '1.12.0';
   const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const CODE_LEN = 12;
   const MAX_TEXT = 900;
@@ -228,6 +228,8 @@
   const completedRequests = new Set(), completedFiles = new Set();
   const latestReceipt = new Map(), receivedFiles = new Map();
   let sendingFile = false;
+  let stagedFiles=[];
+  let fileNoticeTimer=0, statusExpireTimer=0;
   // A file reaching the relay is NOT the same as a verified ChatGPT attachment.
   let fileTransferStage = 'まだファイルを選択していないよ。';
   let fileTransferFailed = false;
@@ -376,11 +378,26 @@
     state.setAttribute('aria-label','接続状態：'+state.textContent);
   }
   function updateStatus(text, bad = false) {
-    statusText = text; statusBad = bad;
-    const e = el('#skr-status');
-    if (e) {e.textContent=text.length>260?text.slice(0,240)+'…（詳細は接続設定で確認）':text;e.dataset.error=String(bad);}
-    updateConnectionBadge();
-    refreshSendButton();
+    statusText=String(text||'');statusBad=!!bad;
+    clearTimeout(statusExpireTimer);
+    const e=el('#skr-status');
+    if(e){
+      e.textContent=statusText.length>260?statusText.slice(0,240)+'…（詳細は接続設定で確認）':statusText;
+      e.dataset.error=String(bad);
+      e.hidden=!statusText;
+      e.dataset.expanded='false';
+    }
+    // Expire old visual notices; never change the connection badge or message state.
+    if(statusText){
+      const captured=statusText;
+      statusExpireTimer=delay(()=>{
+        if(statusText!==captured)return;
+        statusText='';statusBad=false;
+        const notice=el('#skr-status');
+        if(notice){notice.textContent='';notice.hidden=true;}
+      },bad?30000:13000);
+    }
+    updateConnectionBadge();refreshSendButton();
   }
   function showRestoreRecent(value){
     clearTimeout(restoreRecentTimer);
@@ -1430,9 +1447,83 @@
   // Binary content, original filename and media type are never sent to ntfy in plaintext.
   function updateFileProgress(message,bad=false) {
     fileTransferStage=message;fileTransferFailed=!!bad;
-    for(const selector of ['#skr-file-progress-quick']){
-      const node=el(selector);if(node){node.textContent=message;node.dataset.error=String(bad);}
+    clearTimeout(fileNoticeTimer);
+    const node=el('#skr-file-progress-quick');
+    if(node){node.textContent=message;node.dataset.error=String(bad);node.hidden=!message;}
+    if(message){
+      const captured=message;
+      const expire=()=>{
+        if(fileTransferStage!==captured)return;
+        if(sendingFile){fileNoticeTimer=delay(expire,5000);return;}
+        fileTransferStage='';fileTransferFailed=false;
+        const notice=el('#skr-file-progress-quick');
+        if(notice){notice.textContent='';notice.hidden=true;}
+      };
+      fileNoticeTimer=delay(expire,bad?35000:19000);
     }
+  }
+  function clearStagedFiles() {
+    for(const item of stagedFiles)if(item.preview)URL.revokeObjectURL(item.preview);
+    stagedFiles=[];renderStagedFiles();
+  }
+  function stageFiles(files) {
+    const incoming=[...files];
+    const room=Math.max(0,4-stagedFiles.length);
+    for(const file of incoming.slice(0,room)){
+      const mime=String(file.type||'').toLowerCase();
+      if(!FILE_TYPES.has(mime)){updateFileProgress('未対応の形式だよ：'+cleanFilename(file.name),true);continue;}
+      let preview='';
+      if(mime.startsWith('image/')){
+        try{preview=URL.createObjectURL(file);}catch(_){}
+      }
+      stagedFiles.push({file,preview});
+    }
+    if(incoming.length>room)updateStatus('一度に選べるのは4件までだよ。',true);
+    renderStagedFiles();
+  }
+  function renderStagedFiles() {
+    const tray=el('#skr-attachment-tray'),list=el('#skr-attachment-list'),send=el('#skr-attachment-send');
+    if(!tray||!list||!send)return;
+    tray.hidden=stagedFiles.length===0;
+    list.replaceChildren();
+    for(const item of stagedFiles){
+      const card=document.createElement('div');card.className='skr-attachment-card';
+      if(item.preview){
+        const pic=document.createElement('img');pic.src=item.preview;
+        pic.alt='選択した写真：'+cleanFilename(item.file.name);
+        pic.addEventListener('error',()=>{pic.replaceWith(document.createTextNode('画像'));});
+        card.append(pic);
+      }else{
+        const symbol=document.createElement('span');symbol.textContent='▤';symbol.className='skr-attachment-symbol';card.append(symbol);
+      }
+      const name=document.createElement('span');name.className='skr-attachment-filename';
+      name.textContent=cleanFilename(item.file.name)+' / '+showBytes(item.file.size);
+      card.append(name);
+      const remove=document.createElement('button');remove.type='button';remove.textContent='×';
+      remove.setAttribute('aria-label',cleanFilename(item.file.name)+'を選択解除');
+      remove.addEventListener('click',()=>{
+        const i=stagedFiles.indexOf(item);if(i<0||sendingFile)return;
+        if(item.preview)URL.revokeObjectURL(item.preview);
+        stagedFiles.splice(i,1);renderStagedFiles();
+      });
+      card.append(remove);list.append(card);
+    }
+    send.disabled=!!sendingFile||!connected||!active||!!pendingSend;
+    send.textContent='選んだ'+stagedFiles.length+'件をiPadへ転送';
+  }
+  async function sendStagedFiles() {
+    if(sendingFile||!stagedFiles.length)return;
+    if(!active||!connected||pendingSend){updateStatus('iPadの接続を確認してから送ってね。',true);return;}
+    const buttonNode=el('#skr-attachment-send');if(buttonNode)buttonNode.disabled=true;
+    // Sequential upload and removal avoids duplicate transfers after an error.
+    while(stagedFiles.length){
+      const item=stagedFiles[0];if(!item)break;
+      const ok=await sendChosenFile(item.file);
+      if(!ok)break;
+      if(item.preview)URL.revokeObjectURL(item.preview);
+      stagedFiles.shift();renderStagedFiles();
+    }
+    renderStagedFiles();
   }
   function cleanFilename(name) {
     return String(name || 'file').replace(/[\\/\x00-\x1f]/g, '_').slice(0, 120);
@@ -1495,9 +1586,9 @@
     return url;
   }
   async function sendChosenFile(file, batch = false) {
-    if (sendingFile && !batch){updateFileProgress('別のファイルを転送中だよ。完了まで待ってね。',true);return;}
+    if (sendingFile && !batch){updateFileProgress('別のファイルを転送中だよ。完了まで待ってね。',true);return false;}
     if (mode !== 'send' || !active || !connected || pendingSend) {
-      updateStatus('接続完了してからファイルを選んでね。', true);updateFileProgress('iPadとの接続を確認してから選び直してね。',true);return;
+      updateStatus('接続完了してからファイルを選んでね。', true);updateFileProgress('iPadとの接続を確認してから選び直してね。',true);return false;
     }
     sendingFile = true;
     const epoch = generation;
@@ -1517,8 +1608,11 @@
         updateStatus('iPadへ転送依頼したよ。添付されたかiPad側で確認してね。');
         updateFileProgress('③ 中継へ送信済み：iPadの受信確認を待機中。ChatGPTへの添付完了は未確認。');
       }
-    } catch (e) { if (epoch === generation) {updateStatus('ファイル送信：' + e.message, true);updateFileProgress('失敗：'+e.message,true);} }
-    finally { sendingFile = false; }
+      return epoch===generation;
+    } catch (e) {
+      if(epoch===generation){updateStatus('ファイル送信：'+e.message,true);updateFileProgress('失敗：'+e.message,true);}
+      return false;
+    } finally {sendingFile=false;}
   }
   function tryAttach(file) {
     try {
@@ -1801,6 +1895,7 @@
   }
   function draw() {
     const panel=el('#skr-panel');if(!panel)return;
+    // Old preview nodes hold object URLs; the file selection itself remains in memory.
     panel.replaceChildren();
     const header=document.createElement('header');header.className='skr-header';
     const brand=document.createElement('div');brand.className='skr-brand';
@@ -1902,19 +1997,28 @@
       const attachmentInput=document.createElement('input');attachmentInput.type='file';attachmentInput.id='skr-attach-input';
       attachmentInput.accept='image/*,application/pdf,text/plain';attachmentInput.multiple=true;
       attachmentInput.className='skr-visually-hidden-file';compose.append(attachmentInput);
-      attachmentInput.addEventListener('change',async()=>{
-        const selected=[...(attachmentInput.files||[])].slice(0,4);attachmentInput.value='';
-        if(!selected.length)return;
-        if(selected.length>1&&!window.confirm(selected.length+'件のファイルを転送する？\n添付完了はiPadで確認してね。'))return;
-        for(const file of selected)await sendChosenFile(file);
+      attachmentInput.addEventListener('change',()=>{
+        const selected=[...(attachmentInput.files||[])];
+        attachmentInput.value='';
+        if(selected.length)stageFiles(selected);
       });
       const attachmentButton=button(compose,'＋',()=>attachmentInput.click());
       attachmentButton.id='skr-attach-button';
       attachmentButton.title='写真・ファイルを添付';
       attachmentButton.setAttribute('aria-label','写真・ファイルを添付');
+      const tray=document.createElement('div');tray.id='skr-attachment-tray';tray.hidden=true;compose.append(tray);
+      const previewHeader=document.createElement('div');previewHeader.className='skr-attachment-head';
+      const previewTitle=document.createElement('span');previewTitle.textContent='添付前の確認';
+      const discard=document.createElement('button');discard.type='button';discard.textContent='すべて外す';
+      discard.addEventListener('click',()=>{if(!sendingFile)clearStagedFiles();});
+      previewHeader.append(previewTitle,discard);tray.append(previewHeader);
+      const previewList=document.createElement('div');previewList.id='skr-attachment-list';tray.append(previewList);
+      const previewSend=button(tray,'選んだ写真をiPadへ転送',sendStagedFiles);previewSend.id='skr-attachment-send';
       const quickProgress=document.createElement('div');quickProgress.id='skr-file-progress-quick';quickProgress.setAttribute('role','status');
       quickProgress.textContent=fileTransferStage==='まだファイルを選択していないよ。'?'':fileTransferStage;
-      quickProgress.dataset.error=String(fileTransferFailed);compose.append(quickProgress);
+      quickProgress.dataset.error=String(fileTransferFailed);
+      quickProgress.hidden=!quickProgress.textContent;compose.append(quickProgress);
+      renderStagedFiles();
       const count = document.createElement('div');
       count.id = 'skr-draft-count'; count.className = 'skr-draft-count';
       count.textContent = typing.value.length + ' / ' + MAX_TEXT + ' 文字';
