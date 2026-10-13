@@ -1437,11 +1437,40 @@
       updateStatus('コピーした画像が見つからないよ。写真を選択してね。',true);
     } catch(e){updateStatus('画像ペースト不可：'+e.message+'。写真の選択を使ってね。',true);}
   }
+  function updateKeyboardPosition() {
+    const html=document.documentElement, vv=window.visualViewport;
+    const composer=el('#skr-panel .skr-compose');
+    const focused=document.activeElement===el('#skr-typing');
+    if(!focusMode||!composer||!vv||!focused){
+      html.classList.remove('skr-keyboard-open');
+      html.style.removeProperty('--skr-composer-top');
+      return;
+    }
+    const layoutHeight=Math.max(window.innerHeight||0,html.clientHeight||0);
+    // The visible viewport shrinks when iOS shows the software keyboard.
+    // Scroll offsets must be included when positioning in layout viewport.
+    const obscured=layoutHeight-(vv.height+vv.offsetTop);
+    if(obscured<110){
+      html.classList.remove('skr-keyboard-open');
+      html.style.removeProperty('--skr-composer-top');
+      return;
+    }
+    const measured=Math.max(60,Math.min(composer.getBoundingClientRect().height,230));
+    const top=Math.max(4,Math.round(vv.offsetTop+vv.height-measured-9));
+    html.style.setProperty('--skr-composer-top',top+'px');
+    html.classList.add('skr-keyboard-open');
+  }
+  let keyboardRaf=0;
+  function scheduleKeyboardPosition(){
+    if(keyboardRaf)cancelAnimationFrame(keyboardRaf);
+    keyboardRaf=requestAnimationFrame(()=>{keyboardRaf=0;updateKeyboardPosition();});
+  }
   function switchFocus(force) {
     focusMode = typeof force === 'boolean' ? force : !focusMode;
     document.documentElement.classList.toggle('skr-focus-mode',focusMode);
     const panel=el('#skr-panel'); if(panel) {panel.hidden=false; if(focusMode) panel.scrollTop=0;}
     const toggle=el('#skr-focus-toggle'); if(toggle) toggle.textContent=focusMode?'小窓に戻す':'専用入力画面';
+    scheduleKeyboardPosition();
   }
   // EXPERIMENTAL: file transfer via end-to-end encrypted ntfy attachment.
   // Binary content, original filename and media type are never sent to ntfy in plaintext.
@@ -1974,8 +2003,8 @@
       const typing=document.createElement('textarea');typing.id='skr-typing';typing.rows=5;typing.maxLength=MAX_TEXT;
       typing.placeholder='メッセージを入力';typing.value=sentText||restoreDraft();
       typing.rows=2;typing.setAttribute('enterkeyhint','enter');
-      typing.addEventListener('input',refreshDraftCount);
-      delay(refreshDraftCount,0);
+      typing.addEventListener('input',()=>{refreshDraftCount();scheduleKeyboardPosition();});
+      delay(()=>{refreshDraftCount();scheduleKeyboardPosition();},0);
       typing.addEventListener('input',changed);
       typing.addEventListener('compositionstart',()=>{composition=true;});
       typing.addEventListener('compositionend',()=>{composition=false;changed();});compose.append(typing);
@@ -2453,6 +2482,36 @@
     #skr-panel .skr-extras-diagnostics>summary{padding:10px 0;cursor:pointer;font-size:12px}
     #skr-panel .skr-extra-network[hidden]{display:none!important}
   `;
+  css.textContent += `
+    /* v1.12: follow iOS Safari's visual viewport while the software keyboard is visible */
+    html.skr-focus-mode.skr-keyboard-open #skr-panel[data-theme] .skr-compose{
+      top:var(--skr-composer-top,auto)!important;bottom:auto!important;
+      transition:none!important
+    }
+    /* compact photo confirmation, thumbnails are local object URLs only */
+    #skr-panel #skr-attachment-tray{margin:5px 0 7px;padding:7px;border:1px solid var(--ui-border,#476473);
+      border-radius:14px;background:var(--ui-layer,#1b2d3c);max-height:146px;overflow-y:auto}
+    #skr-panel #skr-attachment-tray[hidden]{display:none!important}
+    #skr-panel .skr-attachment-head{display:flex;justify-content:space-between;align-items:center;
+      font-size:12px;margin:0 0 5px;font-weight:650}
+    #skr-panel .skr-attachment-head button{width:auto!important;min-width:0!important;min-height:26px!important;
+      padding:3px 9px!important;margin:0!important;border-radius:10px!important;font-size:12px!important}
+    #skr-panel #skr-attachment-list{display:flex;gap:6px;overflow-x:auto;padding:0 0 4px;scroll-snap-type:x proximity}
+    #skr-panel .skr-attachment-card{display:flex;flex:0 0 118px;align-items:center;gap:4px;
+      border:1px solid var(--ui-border,#557083);border-radius:9px;padding:3px;scroll-snap-align:start;min-width:0}
+    #skr-panel .skr-attachment-card img{width:40px;height:40px;object-fit:cover;border-radius:7px;flex:none}
+    #skr-panel .skr-attachment-symbol{font-size:22px}
+    #skr-panel .skr-attachment-filename{font-size:10px;overflow-wrap:anywhere;
+      display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;
+      flex:1;min-width:0}
+    #skr-panel .skr-attachment-card button{background:transparent!important;color:var(--ui-text,#fff)!important;
+      font-size:17px!important;padding:0!important;min-width:20px!important;width:20px!important;
+      min-height:24px!important;height:24px!important;box-shadow:none!important;border:0!important}
+    #skr-panel #skr-attachment-send{width:100%;min-height:33px;font-size:12px;padding:5px 9px;
+      border-radius:10px;margin:5px 0 1px}
+    #skr-panel #skr-status[hidden],#skr-panel #skr-file-progress-quick[hidden]{display:none!important}
+    #skr-panel .skr-compose{scrollbar-width:thin}
+  `;
   document.documentElement.append(css);
   const launcher = document.createElement('button'); launcher.id = 'skr-launcher'; launcher.textContent = '⌨'; launcher.title = 'リモート入力';
   const panel = document.createElement('aside'); panel.id = 'skr-panel';
@@ -2483,7 +2542,22 @@
       }else if(prefs.auto&&isValidCode(code)) delay(()=>startSend(code,true),500);
     }else if (prefs.auto && isValidCode(code)) delay(() => startSend(code, true), 500);
   }
-  window.addEventListener('pagehide', () => { if(mode==='send') saveDraft(el('#skr-typing')?.value || ''); disconnect(); });
+  if(window.visualViewport){
+    window.visualViewport.addEventListener('resize',scheduleKeyboardPosition,{passive:true});
+    window.visualViewport.addEventListener('scroll',scheduleKeyboardPosition,{passive:true});
+  }
+  window.addEventListener('resize',scheduleKeyboardPosition,{passive:true});
+  window.addEventListener('orientationchange',scheduleKeyboardPosition,{passive:true});
+  document.addEventListener('focusin',scheduleKeyboardPosition,{passive:true});
+  document.addEventListener('focusout',()=>{
+    // iOS focus transitions briefly leave the viewport shrunken.
+    delay(scheduleKeyboardPosition,130);
+  },{passive:true});
+  scheduleKeyboardPosition();
+  window.addEventListener('pagehide', () => {
+    if(mode==='send')saveDraft(el('#skr-typing')?.value||'');
+    clearStagedFiles();disconnect();
+  });
   window.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')resumeAfterForeground();});
   window.addEventListener('pageshow',()=>{resumeAfterForeground();});
   window.addEventListener('online',()=>{resumeAfterForeground();});
