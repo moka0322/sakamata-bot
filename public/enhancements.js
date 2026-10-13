@@ -59,6 +59,59 @@ async function importBackup(file){
   const sBox=document.getElementById("skr-extra-snippets");if(sBox)drawSnippets(sBox);
  }catch(e){info("復元失敗："+e.message,true)}
 }
+
+// This test intentionally never sends the pairing code, message draft, or files.
+// It uses a one-time, randomly named ntfy topic containing only a random probe marker.
+async function checkRelayConnectivity(buttonEl, output) {
+ buttonEl.disabled=true;
+ const lines=[];
+ const show=(msg)=>{lines.push(msg);output.textContent=lines.join("\n");};
+ const ctrl=new AbortController();
+ const timeout=setTimeout(()=>ctrl.abort(),14000);
+ const rand=new Uint8Array(12);crypto.getRandomValues(rand);
+ const suffix=[...rand].map(n=>n.toString(16).padStart(2,"0")).join("");
+ const topic="skr-diag-"+suffix;
+ const base="https://ntfy.sh/"+topic;
+ const marker="skr-diagnostic-"+suffix;
+ const opts={cache:"no-store",signal:ctrl.signal};
+ show("診断中：端末の接続コード・下書きは送信しないよ。");
+ try{
+   const r=await fetch(base+"/json?poll=1&since=latest",opts);
+   if(!r.ok)throw Error("GET HTTP "+r.status);
+   await r.text();
+   show("① 中継からの読み取り：成功（HTTP "+r.status+"）");
+ }catch(e){
+   show("① 中継からの読み取り：失敗（"+(e.name==="AbortError"?"14秒でタイムアウト":e.message||String(e))+"）");
+   show("→ 独立Webサイト→ntfy.sh がブロックされている可能性。SafariのCORS・DNS・VPN・中継障害を確認。");
+   clearTimeout(timeout);buttonEl.disabled=false;return;
+ }
+ clearTimeout(timeout);
+ const sendController=new AbortController();const sendTimeout=setTimeout(()=>sendController.abort(),14000);
+ try{
+   const p=await fetch(base,{method:"POST",headers:{"Content-Type":"text/plain;charset=UTF-8"},body:marker,cache:"no-store",signal:sendController.signal});
+   if(!p.ok)throw Error("POST HTTP "+p.status);
+   show("② 中継への書き込み：成功（HTTP "+p.status+"）");
+ }catch(e){
+   show("② 中継への書き込み：失敗（"+(e.name==="AbortError"?"14秒でタイムアウト":e.message||String(e))+"）");
+   show("→ 読み取りは可能。書き込み側のCORS・レート制限・送信エラーの可能性。");
+   clearTimeout(sendTimeout);buttonEl.disabled=false;return;
+ }
+ clearTimeout(sendTimeout);
+ try{
+   const pollCtrl=new AbortController();const timer=setTimeout(()=>pollCtrl.abort(),14000);
+   try{
+     const res=await fetch(base+"/json?poll=1&since=all",{cache:"no-store",signal:pollCtrl.signal});
+     if(!res.ok)throw Error("GET HTTP "+res.status);
+     const data=await res.text();
+     const messages=data.split("\n").filter(Boolean).flatMap(line=>{
+       try{const x=JSON.parse(line);return x.event==="message"?[x.message]:[]}catch(_){return []}
+     });
+     if(messages.includes(marker)){show("③ テスト文字の再受信：成功");show("判定：iPhoneの独立サイト→ntfy.sh は往復通信可能。次はiPad受信／暗号化・コード一致を診断しよう。");}
+     else {show("③ テスト文字の再受信：失敗（応答にマーカーなし）");show("→ 中継のキャッシュや再取得に問題の可能性。");}
+   }finally{clearTimeout(timer)}
+ }catch(e){show("③ テスト文字の再受信：失敗（"+(e.message||String(e))+"）");}
+ buttonEl.disabled=false;
+}
 function inject(){
  const c=document.querySelector("#skr-panel .skr-compose");
  if(!c||c.querySelector("#skr-extras"))return;
@@ -91,6 +144,11 @@ function inject(){
  file.addEventListener("change",()=>{const f=file.files?.[0];file.value="";if(f)importBackup(f)});
  const backups=element("div",undefined,"skr-extras-buttons");backups.append(button("バックアップ保存",exportBackup),button("バックアップ読み込み",()=>file.click()));
  body.append(backups,file);
+ body.append(element("h4","接続トラブルの切り分け"));
+ const diagButton=button("iPhoneから中継への通信をテスト",()=>checkRelayConnectivity(diagButton,diagOutput));
+ const diagOutput=element("pre","接続できない場合はここを押してね。下書きや接続コードは診断に送らないよ。");
+ diagOutput.style.cssText="white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.6;padding:12px;border-radius:10px;background:#172031;color:#e9efff;margin:6px 0 0";
+ body.append(diagButton,diagOutput);
  const message=element("p","下書き・履歴はこの端末内に保存するよ。接続コードは含まれないよ。");
  message.id="skr-extras-info";body.append(message);
  const before=c.querySelector("#skr-draft-count");if(before)c.insertBefore(d,before);else c.append(d);
