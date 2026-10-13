@@ -1751,7 +1751,7 @@
       if(epoch!==generation||mode!=='receive'||!allowed||sid!==currentSender)return;
       if(recordedFileOffer(id)||recordedImageDigest(hash)){
         rememberFileOffer(id);
-        const dup='同じ写真・ファイルは最近受信済みだよ。更新や再送による重複添付を防いだよ（再添付が必要なら3分後に試してね）。';
+        const dup='同じ写真・ファイルは最近受信済みだよ。二重添付を防いだよ。最初の添付が失敗していたら、iPad側の「受信済みファイル」から「ChatGPTへの添付を再試行」を押してね。';
         updateStatus(dup);
         await report(dup);
         return;
