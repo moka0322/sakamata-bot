@@ -62,55 +62,98 @@ async function importBackup(file){
 
 // This test intentionally never sends the pairing code, message draft, or files.
 // It uses a one-time, randomly named ntfy topic containing only a random probe marker.
+// Three independent diagnostics: network access, live SSE delivery, cached replay.
+// Uses an isolated random topic; it never transmits user draft, pairing code or files.
 async function checkRelayConnectivity(buttonEl, output) {
- buttonEl.disabled=true;
- const lines=[];
- const show=(msg)=>{lines.push(msg);output.textContent=lines.join("\n");};
- const ctrl=new AbortController();
- const timeout=setTimeout(()=>ctrl.abort(),14000);
- const rand=new Uint8Array(12);crypto.getRandomValues(rand);
- const suffix=[...rand].map(n=>n.toString(16).padStart(2,"0")).join("");
- const topic="skr-diag-"+suffix;
- const base="https://ntfy.sh/"+topic;
- const marker="skr-diagnostic-"+suffix;
- const opts={cache:"no-store",signal:ctrl.signal};
- show("診断中：端末の接続コード・下書きは送信しないよ。");
- try{
-   const r=await fetch(base+"/json?poll=1&since=latest",opts);
-   if(!r.ok)throw Error("GET HTTP "+r.status);
-   await r.text();
-   show("① 中継からの読み取り：成功（HTTP "+r.status+"）");
- }catch(e){
-   show("① 中継からの読み取り：失敗（"+(e.name==="AbortError"?"14秒でタイムアウト":e.message||String(e))+"）");
-   show("→ 独立Webサイト→ntfy.sh がブロックされている可能性。SafariのCORS・DNS・VPN・中継障害を確認。");
-   clearTimeout(timeout);buttonEl.disabled=false;return;
- }
- clearTimeout(timeout);
- const sendController=new AbortController();const sendTimeout=setTimeout(()=>sendController.abort(),14000);
- try{
-   const p=await fetch(base,{method:"POST",headers:{"Content-Type":"text/plain;charset=UTF-8"},body:marker,cache:"no-store",signal:sendController.signal});
-   if(!p.ok)throw Error("POST HTTP "+p.status);
-   show("② 中継への書き込み：成功（HTTP "+p.status+"）");
- }catch(e){
-   show("② 中継への書き込み：失敗（"+(e.name==="AbortError"?"14秒でタイムアウト":e.message||String(e))+"）");
-   show("→ 読み取りは可能。書き込み側のCORS・レート制限・送信エラーの可能性。");
-   clearTimeout(sendTimeout);buttonEl.disabled=false;return;
- }
- clearTimeout(sendTimeout);
- try{
-   const pollCtrl=new AbortController();const timer=setTimeout(()=>pollCtrl.abort(),14000);
-   try{
-     const res=await fetch(base+"/json?poll=1&since=all",{cache:"no-store",signal:pollCtrl.signal});
-     if(!res.ok)throw Error("GET HTTP "+res.status);
-     const data=await res.text();
-     const messages=data.split("\n").filter(Boolean).flatMap(line=>{
-       try{const x=JSON.parse(line);return x.event==="message"?[x.message]:[]}catch(_){return []}
-     });
-     if(messages.includes(marker)){show("③ テスト文字の再受信：成功");show("判定：iPhoneの独立サイト→ntfy.sh は往復通信可能。次はiPad受信／暗号化・コード一致を診断しよう。");}
-     else {show("③ テスト文字の再受信：失敗（応答にマーカーなし）");show("→ 中継のキャッシュや再取得に問題の可能性。");}
-   }finally{clearTimeout(timer)}
- }catch(e){show("③ テスト文字の再受信：失敗（"+(e.message||String(e))+"）");}
- buttonEl.disabled=false;
+  buttonEl.disabled=true;
+  const logs=[],show=msg=>{logs.push(msg);output.textContent=logs.join("\n");};
+  const seed=new Uint8Array(16);crypto.getRandomValues(seed);
+  const id=[...seed].map(x=>x.toString(16).padStart(2,"0")).join("");
+  const base="https://ntfy.sh/skr-diag-"+id, marker="skr-probe-"+id;
+  let es=null,liveSeen=false,liveOpened=false,liveFailed=false,postId="";
+  let readOk=false,writeOk=false,replayOk=false,counts=[];
+  const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+  async function bounded(url,init={},limit=13000) {
+    const ac=new AbortController(),timer=setTimeout(()=>ac.abort(),limit);
+    try {return await fetch(url,{...init,signal:ac.signal});}
+    finally{clearTimeout(timer);}
+  }
+  show("診断v2開始：接続コード・下書き・写真は送信しないよ。");
+  try {
+    // Verify cross-origin fetch access independently from the current pairing.
+    try {
+      const r=await bounded(base+"/json?poll=1&since=latest",{cache:"no-store"});
+      if(!r.ok)throw Error("HTTP "+r.status);
+      await r.text();readOk=true;show("① 中継への読み取り：成功（HTTP "+r.status+"）");
+    }catch(e){show("① 中継への読み取り：失敗（"+(e.name==="AbortError"?"タイムアウト":e.message||String(e))+"）");}
+    // Open SSE before publishing, to distinguish live delivery from cache replay.
+    if(typeof EventSource==="function") {
+      try {
+        es=new EventSource(base+"/sse?since=latest");
+        es.onopen=()=>{liveOpened=true;};
+        es.onmessage=e=>{try {
+          const x=JSON.parse(e.data);
+          if(x.event==="message"&&x.message===marker)liveSeen=true;
+        }catch(_){}};
+        es.onerror=()=>{liveFailed=true;};
+        await pause(1700);
+        show("② リアルタイム受信の準備："+(liveOpened?"開始できた":liveFailed?"接続エラー":"応答待ち"));
+      }catch(e){show("② リアルタイム受信の準備：利用できない（"+(e.message||String(e))+"）");}
+    }else{show("② リアルタイム受信：このブラウザでは未対応");}
+    try {
+      // Avoid cache:no-store on the POST: compare replay against normal ntfy publish behavior.
+      const r=await bounded(base,{
+        method:"POST",headers:{"Content-Type":"text/plain;charset=UTF-8"},body:marker
+      });
+      if(!r.ok)throw Error("HTTP "+r.status);
+      const response=await r.text();
+      try{const p=JSON.parse(response);postId=typeof p.id==="string"?p.id:"";}catch(_){}
+      writeOk=true;show("③ 中継への書き込み：成功（HTTP "+r.status+(postId?"・ID発行あり":"")+"）");
+    }catch(e){show("③ 中継への書き込み：失敗（"+(e.name==="AbortError"?"タイムアウト":e.message||String(e))+"）");}
+    if(writeOk&&readOk) {
+      // Using both since=all and since=latest avoids conflating freshness/cache/format issues.
+      const cases=["all","latest","all","latest"];
+      for(let i=0;i<cases.length&&!replayOk;i++){
+        if(i)await pause(i===1?1000:i===2?1900:2800);
+        try {
+          const url=base+"/json?poll=1&since="+cases[i]+"&probe="+i;
+          const r=await bounded(url,{cache:"no-store"});
+          if(!r.ok)throw Error("HTTP "+r.status);
+          const body=await r.text();
+          let msgs=0,unparsed=0,idMatch=false,bodyMatch=false;
+          for(const line of body.split(/\r?\n/)){
+            if(!line.trim())continue;
+            try {
+              const item=JSON.parse(line);
+              if(item.event==="message") {
+                msgs++;
+                if(item.message===marker)bodyMatch=true;
+                if(postId&&item.id===postId)idMatch=true;
+              }
+            }catch(_){unparsed++;}
+          }
+          counts.push(cases[i]+": "+msgs+"件"+(unparsed?" / JSON解析失敗 "+unparsed+"件":"")+(bodyMatch||idMatch?" / 一致":""));
+          if(bodyMatch||idMatch)replayOk=true;
+        }catch(e){counts.push(cases[i]+": "+(e.name==="AbortError"?"タイムアウト":e.message||String(e)));}
+      }
+      show("④ キャッシュ再取得（最大4回）："+(replayOk?"成功":"未確認・一致なし"));
+      show("　内訳："+counts.join(" → "));
+    } else show("④ キャッシュ再取得：①か③が失敗したため省略");
+    if(writeOk&&es&&!liveSeen)await pause(2000);
+    show("⑤ リアルタイムの実メッセージ受信："+(liveSeen?"成功":liveOpened?"未確認・一致なし":"未確認（接続未確立）"));
+    if(replayOk&&liveSeen)
+      show("判定：iPhone→ntfyの送受信は正常。iPad側の受信、コード一致、暗号化、応答経路が次の調査対象だよ。");
+    else if(replayOk)
+      show("判定：キャッシュ経由は正常。リアルタイム受信が不安定な可能性があるよ。");
+    else if(liveSeen)
+      show("判定：リアルタイム通信は成功、履歴の再取得は失敗。中継キャッシュか取得条件を調べよう。");
+    else if(writeOk&&readOk)
+      show("判定：読み書きは成功したけど本文を受信できなかった。中継側の保存・配信・ブラウザでの解析に問題がある可能性。原因確定ではないよ。");
+    else show("判定：中継との基本通信から問題があるよ。");
+  } finally {
+    try{es?.close();}catch(_){}
+    buttonEl.disabled=false;
+  }
 }
 function inject(){
  const c=document.querySelector("#skr-panel .skr-compose");
@@ -145,7 +188,7 @@ function inject(){
  const backups=element("div",undefined,"skr-extras-buttons");backups.append(button("バックアップ保存",exportBackup),button("バックアップ読み込み",()=>file.click()));
  body.append(backups,file);
  body.append(element("h4","接続トラブルの切り分け"));
- const diagButton=button("iPhoneから中継への通信をテスト",()=>checkRelayConnectivity(diagButton,diagOutput));
+ const diagButton=button("通信診断 v2（読み取り・送信・受信）",()=>checkRelayConnectivity(diagButton,diagOutput));
  const diagOutput=element("pre","接続できない場合はここを押してね。下書きや接続コードは診断に送らないよ。");
  diagOutput.style.cssText="white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.6;padding:12px;border-radius:10px;background:#172031;color:#e9efff;margin:6px 0 0";
  body.append(diagButton,diagOutput);
