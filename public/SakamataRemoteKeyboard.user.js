@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sakamata Remote Keyboard
 // @namespace    https://chatgpt.com/
-// @version      1.8.4
+// @version      1.9.0
 // @description  iPhone/iPad遠隔入力：見やすい専用画面、安定した下書き同期、返信検出診断。
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -16,7 +16,7 @@
   if (document.getElementById('skr-launcher')) return;
   const STANDALONE = !!window.__SKR_STANDALONE__; // independently hosted sender webpage
 
-  const VERSION = '1.8.4';
+  const VERSION = '1.9.0';
   const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const CODE_LEN = 12;
   const MAX_TEXT = 900;
@@ -66,6 +66,107 @@
   const isValidCode = v => typeof v === 'string' && new RegExp('^[' + ALPHABET + ']{' + CODE_LEN + '}$').test(v);
   const cleanCode = v => String(v || '').toUpperCase().replace(/[^A-Z2-9]/g, '').slice(0, CODE_LEN);
   const pretty = v => (String(v || '').match(/.{1,4}/g) || []).join('–');
+
+  // Pairing usability. The generated code remains the same 12-character secret
+  // as v1.8, so existing receivers and keys remain compatible.
+  const PAIR_APP_URL = 'https://sakamata-remote-keyboard.onrender.com/';
+  function pairLink(value) {
+    const u=new URL(PAIR_APP_URL);
+    u.hash='pair='+encodeURIComponent(value);
+    return u.href; // URL fragment is not included in the HTTP request
+  }
+  function codeFromText(value) {
+    const raw=String(value||'').trim();
+    try {
+      const u=new URL(raw);
+      if (u.origin===new URL(PAIR_APP_URL).origin) {
+        const pair=new URLSearchParams(u.hash.replace(/^#/,'')).get('pair');
+        return pair && isValidCode(cleanCode(pair)) ? cleanCode(pair) : '';
+      }
+      return '';
+    } catch(_) {}
+    const codeCandidate=cleanCode(raw);
+    return isValidCode(codeCandidate) ? codeCandidate : '';
+  }
+  function paintPairCode(parent,value) {
+    parent.replaceChildren();
+    const normalized=cleanCode(value);
+    const labels=[];
+    parent.setAttribute('aria-label', normalized.length===CODE_LEN?
+      '接続コード '+normalized.split('').map(ch=>/\d/.test(ch)?'数字 '+ch:'英字 '+ch).join('、'):
+      '接続コード '+normalized.length+'文字');
+    for(let group=0;group<3;group++){
+      if(group){const dash=document.createElement('span');dash.className='skr-pair-separator';dash.textContent='–';dash.setAttribute('aria-hidden','true');parent.append(dash);}
+      const section=document.createElement('span');section.className='skr-pair-group';
+      section.setAttribute('aria-hidden','true');
+      for(let i=group*4;i<Math.min((group+1)*4,normalized.length);i++) {
+        const ch=normalized[i],span=document.createElement('span');
+        span.className=/[2-9]/.test(ch)?'skr-pair-digit':'skr-pair-letter';
+        span.textContent=ch;span.title=/[2-9]/.test(ch)?'数字の '+ch:'アルファベットの '+ch;
+        section.append(span);
+      }
+      parent.append(section);
+    }
+  }
+  async function copyPair(value) {
+    if(!isValidCode(value)) {updateStatus('コピーする接続コードが見つからないよ。',true);return false;}
+    try {
+      if(!navigator.clipboard?.writeText)throw new Error('clipboard API unavailable');
+      await navigator.clipboard.writeText(pretty(value));
+      updateStatus('接続コードをコピーしたよ。iPhoneで「コードを貼り付け」を使ってね。');
+      return true;
+    }catch(e){
+      // Do not silently claim that a copy succeeded; show selectable text.
+      window.prompt('自動コピーできなかったよ。ここから選択してコピーしてね。',pretty(value));
+      updateStatus('自動コピーが使えなかったので、選択用の画面を開いたよ。');
+      return false;
+    }
+  }
+  async function sharePair() {
+    if(!isValidCode(code)){updateStatus('共有するコードがないよ。',true);return;}
+    const link=pairLink(code);
+    if(typeof navigator.share==='function'){
+      try{
+        await navigator.share({title:'沙花叉リモート入力 接続',url:link});
+        updateStatus('共有先に接続リンクを渡したよ。iPhoneで開いて接続を確認してね。');
+        return;
+      }catch(e){if(e?.name==='AbortError')return;}
+    }
+    try{
+      if(!navigator.clipboard?.writeText)throw new Error('clipboard API unavailable');
+      await navigator.clipboard.writeText(link);
+      updateStatus('接続リンクをコピーしたよ。AirDropやメッセージで自分のiPhoneへ共有してね。');
+    }catch(e){
+      window.prompt('自分のiPhoneに送る接続リンクをコピーしてね。',link);
+      updateStatus('共有リンクのコピー画面を開いたよ。');
+    }
+  }
+  async function pastePairInto(input,feedback) {
+    try{
+      if(!navigator.clipboard?.readText)throw new Error('clipboard API unavailable');
+      const text=await navigator.clipboard.readText(), candidate=codeFromText(text);
+      if(!candidate){updateStatus('クリップボードに有効な12文字のコードがないよ。',true);return;}
+      input.value=pretty(candidate);
+      input.dispatchEvent(new Event('input',{bubbles:true}));
+      updateStatus('接続コードを取り込んだよ。「iPadへ接続」を押してね。');
+    }catch(_){
+      updateStatus('Safariがクリップボードの読み取りを許可しなかったよ。入力欄を長押しして「ペースト」を使ってね。',true);
+      input.focus();
+    }
+  }
+  function shareablePairFragment() {
+    if(!STANDALONE)return '';
+    try{
+      const fragment=new URLSearchParams(location.hash.replace(/^#/,''));
+      const raw=fragment.get('pair');
+      if(!raw)return '';
+      // Scrub the secret from the address bar and browser history before use.
+      history.replaceState(history.state,'',location.pathname+location.search);
+      const candidate=cleanCode(raw);
+      return isValidCode(candidate)?candidate:'';
+    }catch(_){return '';}
+  }
+
 
   function randomCode() {
     // 32-character alphabet; 12 chars = 60-bit one-time shared secret.
@@ -1602,7 +1703,18 @@
     if(mode==='receive') {
       const card=document.createElement('section');card.className='skr-card';panel.append(card);
       p('01  /  接続コード（iPhoneと共有）',card);
-      const c=document.createElement('div');c.id='skr-code';c.textContent=pretty(code);card.append(c);
+      const c=document.createElement('div');c.id='skr-code';c.className='skr-pair-chars';card.append(c);
+      paintPairCode(c,code);
+      const keyLegend=document.createElement('p');keyLegend.className='skr-pair-legend';
+      keyLegend.textContent='色で見分けよう：';keyLegend.append(
+        Object.assign(document.createElement('span'),{className:'skr-pair-digit',textContent:'数字 2〜9'}),
+        document.createTextNode(' ／ '),
+        Object.assign(document.createElement('span'),{className:'skr-pair-letter',textContent:'英字 A〜Z'})
+      );card.append(keyLegend);
+      const shareButtons=document.createElement('div');shareButtons.className='skr-pair-actions';card.append(shareButtons);
+      button(shareButtons,'コードをコピー',()=>copyPair(code));
+      button(shareButtons,'iPhoneへ共有（AirDrop等）',sharePair);
+      p('共有リンクは接続用の秘密の鍵だよ。自分の端末以外には送らないでね。',card);
       if(active)button(card,'同期を再開（iPadの入力欄が空の場合）',resume,true);
       else button(card,'入力を許可して受信開始',()=>allowReceive(),true);
       button(card,'今の下書きをiPhoneの入力として引き継ぐ',adoptVisibleDraft);
@@ -1729,7 +1841,25 @@
       const more=details(panel,'⚙  接続・詳細設定');
       const label=document.createElement('label');label.textContent='iPadの接続コード';label.htmlFor='skr-room';more.append(label);
       const room=document.createElement('input');room.id='skr-room';room.value=pretty(code);room.placeholder='XXXX-XXXX-XXXX';
-      room.autocapitalize='characters';room.autocomplete='off';more.append(room);
+      room.autocapitalize='characters';room.autocomplete='off';room.spellcheck=false;room.setAttribute('autocorrect','off');room.setAttribute('enterkeyhint','done');
+      more.append(room);
+      const pasteButton=button(more,'クリップボードからコードを貼り付け',()=>pastePairInto(room));
+      pasteButton.id='skr-paste-pair';
+      const codePreview=document.createElement('div');codePreview.id='skr-pair-preview';codePreview.className='skr-pair-chars';
+      more.append(codePreview);
+      const codeFeedback=document.createElement('p');codeFeedback.className='skr-code-feedback';more.append(codeFeedback);
+      const refreshCodePreview=()=>{
+        const entered=cleanCode(room.value);
+        paintPairCode(codePreview,entered);
+        if(!entered){codeFeedback.textContent='12文字の接続コードを入れてね。数字と英字は色が違うよ。';return;}
+        if(!isValidCode(entered)){codeFeedback.textContent=entered.length+' / 12文字。入力を確認してね。';return;}
+        if(active&&code&&entered!==code){
+          codeFeedback.textContent='現在の接続コードと違うよ。接続ボタンで切り替えてね。';
+        }else {
+          codeFeedback.textContent='12 / 12文字 ✓　数字はオレンジ、英字は水色。';
+        }
+      };
+      room.addEventListener('input',refreshCodePreview);refreshCodePreview();
       button(more,active?'同じiPadへ再接続':'iPadへ接続',()=>startSend(room.value));
       button(more,'接続を再確認（反応が止まったら）',()=>{restartListenerIfStale(0);probePeer();});
       button(more,'iPadの応答を25秒確認（文章は送らない）',()=>{
@@ -1991,6 +2121,28 @@
     #skr-panel[data-motion="off"] *,#skr-panel[data-motion="off"] *:before,#skr-panel[data-motion="off"] *:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
     @media(max-width:355px){#skr-panel .skr-header-actions{gap:3px}#skr-panel[data-theme] button.skr-theme-switch{font-size:9px;padding:5px}#skr-panel .skr-brand-lines>span{display:none}}
   `;
+
+  css.textContent += `
+    /* v1.9 connection code UI: per-glyph differentiation, readable on iPad/iPhone. */
+    #skr-panel .skr-pair-chars{display:flex;justify-content:center;align-items:center;gap:clamp(3px,.75vw,9px);
+      font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,monospace!important;font-variant-numeric:tabular-nums;
+      letter-spacing:0!important;user-select:text;flex-wrap:nowrap;white-space:nowrap;overflow-x:auto}
+    #skr-panel .skr-pair-group{display:inline-flex;gap:clamp(2px,.5vw,5px);white-space:nowrap}
+    #skr-panel .skr-pair-digit{color:#ffcf8f!important;-webkit-text-fill-color:#ffcf8f!important;font-weight:900}
+    #skr-panel .skr-pair-letter{color:#9aeeef!important;-webkit-text-fill-color:#9aeeef!important;font-weight:900}
+    #skr-panel .skr-pair-separator{opacity:.58;font-weight:600;color:var(--ui-muted,#d1c0ce)!important}
+    #skr-panel #skr-code{font-size:clamp(16px,2.4vw,27px);padding:16px 9px;letter-spacing:0!important;min-height:56px}
+    #skr-panel #skr-pair-preview{background:#102632;border:1px solid var(--ui-border,#425967);padding:11px 6px;
+      border-radius:12px;margin:10px 0 3px;min-height:46px;font-size:clamp(15px,3vw,23px)}
+    #skr-panel .skr-pair-legend{font-weight:600;margin:9px 0!important;font-size:12px}
+    #skr-panel .skr-pair-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    #skr-panel .skr-pair-actions button{margin:6px 0 0;font-size:12px;padding:11px 7px;min-width:0}
+    #skr-panel .skr-code-feedback{font-size:12px;color:var(--ui-muted,#ced4dd)!important;margin:3px 0 10px!important}
+    #skr-panel #skr-room{font-family:ui-monospace,SFMono-Regular,Menlo,monospace!important;letter-spacing:.07em;font-weight:750}
+    #skr-panel #skr-paste-pair{background:var(--ui-layer,#334456);color:var(--ui-text,#fff);border-color:var(--ui-border,#596d80)}
+    @media(max-width:500px){#skr-panel #skr-code{font-size:clamp(14px,4vw,23px)}}
+  `;
+
   document.documentElement.append(css);
   const launcher = document.createElement('button'); launcher.id = 'skr-launcher'; launcher.textContent = '⌨'; launcher.title = '沙花叉リモート入力';
   const panel = document.createElement('aside'); panel.id = 'skr-panel';
@@ -2001,7 +2153,8 @@
   draw();
   if (focusMode) switchFocus(true);
   // Restore saved pairing and local draft (no server-side draft storage by this app).
-  if (STANDALONE) {
+  const incomingPairCode=shareablePairFragment();
+  if (STANDALONE && !incomingPairCode) {
     const u=new URL(location.href); const incoming=new URLSearchParams(u.hash.replace(/^#/,'')); const shared=incoming.get('text') || incoming.get('url') || '';
     if(shared && shared.length<=MAX_TEXT){ sentText=shared;saveDraft(shared);history.replaceState(null,'',u.pathname); }
   }
@@ -2010,7 +2163,15 @@
     if (prefs.auto) delay(() => allowReceive(true), 500);
   } else if (prefs.role === 'send' || STANDALONE) {
     mode = 'send'; code = prefs.senderCode; draw(); if(focusMode) switchFocus(true);
-    if (prefs.auto && isValidCode(code)) delay(() => startSend(code, true), 500);
+    if(incomingPairCode){
+      const isNew=incomingPairCode!==code;
+      const accepted=!isNew||window.confirm('iPadから共有された接続コードに切り替えて接続する？\n'+pretty(incomingPairCode)+'\n※ 自分のiPadから届いたコードだけ許可してね。');
+      if(accepted){
+        code=incomingPairCode;const field=el('#skr-room');
+        if(field){field.value=pretty(code);field.dispatchEvent(new Event('input',{bubbles:true}));}
+        delay(()=>startSend(code,false),500);
+      }else if(prefs.auto&&isValidCode(code)) delay(()=>startSend(code,true),500);
+    }else if (prefs.auto && isValidCode(code)) delay(() => startSend(code, true), 500);
   }
   window.addEventListener('pagehide', () => { if(mode==='send') saveDraft(el('#skr-typing')?.value || ''); disconnect(); });
   window.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')resumeAfterForeground();});
