@@ -1,0 +1,25 @@
+{
+  "id": "./",
+  "name": "沙花叉リモート入力",
+  "short_name": "沙花叉入力",
+  "description": "iPhoneの日本語フリック入力でiPadのChatGPTを遠隔操作する試験用送信画面",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#191827",
+  "theme_color": "#191827",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
