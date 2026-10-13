@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Remote Keyboard
 // @namespace    https://chatgpt.com/
-// @version      1.10.0
+// @version      1.10.1
 // @description  iPhone/iPad遠隔入力：見やすい専用画面、安定した下書き同期、返信検出診断。
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -16,7 +16,7 @@
   if (document.getElementById('skr-launcher')) return;
   const STANDALONE = !!window.__SKR_STANDALONE__; // independently hosted sender webpage
 
-  const VERSION = '1.10.0';
+  const VERSION = '1.10.1';
   const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const CODE_LEN = 12;
   const MAX_TEXT = 900;
@@ -30,7 +30,7 @@
   const REPLY_LIMIT = 500; // preview only; keep ntfy messages within the free service size limit
   const safeStorage = (k, fallback = '') => { try { return localStorage.getItem(k) ?? fallback; } catch (_) { return fallback; } };
   const putStorage = (k,v) => { try { localStorage.setItem(k, v); return true; } catch (_) { return false; } };
-  const loadSettings = () => { try { return { confirm: true, replies: false, autoFocus: true, photoMode: 'auto', theme: 'aurora', motion: 'system', ...JSON.parse(safeStorage(SETTINGS_STORAGE,'{}')) }; } catch (_) { return { confirm:true, replies:false, autoFocus:true,theme:'aurora',motion:'system' }; } };
+  const loadSettings = () => { try { return { confirm: true, replies: false, autoFocus: true, photoMode: 'auto', theme: 'aurora', motion: 'system', autoClearLikely:true, ...JSON.parse(safeStorage(SETTINGS_STORAGE,'{}')) }; } catch (_) { return { confirm:true, replies:false, autoFocus:true,theme:'aurora',motion:'system',autoClearLikely:true }; } };
   let settings = loadSettings();
   const visualThemes = ['aurora','lagoon','graphite'];
   function safeTheme() { return visualThemes.includes(settings.theme) ? settings.theme : 'aurora'; }
@@ -747,8 +747,13 @@
         // A blank composer can be temporary while ChatGPT/React re-renders.
         // Never erase the sender's only draft without seeing a posted user turn.
         if (await editorStayedEmpty(epoch)) {
-          await reply(false, 'iPad入力欄は空に見えるけど、投稿を確認できなかったよ。iPhoneの下書きは保持したよ。送信済みかiPadで確認してね。', false);
-          updateStatus('投稿の成功を確認できなかったよ。iPhoneの下書きを保持したよ。',true);
+          // The iPad did click ChatGPT's Send button and its composer stayed
+          // empty. Treat it as a likely submission, NOT a verified post.
+          // The iPhone keeps a local history entry for one-tap restoration.
+          lastApplied=null;recordOwnedDraft('');
+          clearTimeout(verifyTimer);
+          await reply(true, '送信ボタンを押した後、iPad入力欄が空になったよ（投稿完了は未確認）。', false);
+          updateStatus('送信操作済み。会話への投稿完了は未確認だよ。');
           return;
         }
         await reply(false, '投稿確認ができず、iPadの入力欄にも文章が残っている可能性があるよ。iPadで確かめてね。二重送信は禁止。');
@@ -775,6 +780,11 @@
       updateStatus('遠隔送信：' + (packet.message || '完了を確認できないよ。iPadを確認してね。')+'／投稿済みなら下の「送信済みを確認してクリア」を押してね。', true);
       refreshSendButton();return;
     }
+    if(packet.verified===false && settings.autoClearLikely===false){
+      ambiguousSendText=original;
+      updateStatus('iPadの送信操作後、入力欄は空になったよ。ただし投稿完了は未確認。確認したら「送信済みを確認してクリア」を押してね。');
+      refreshSendButton();return;
+    }
     ambiguousSendText='';
     const typing = el('#skr-typing');
     // Do not clear text that the user changed while waiting for confirmation.
@@ -786,7 +796,7 @@
       clearTimeout(typingTimer);refreshDraftCount();
     }
     const note = packet.verified === false
-      ? 'iPadの入力欄は空になったよ。ただし投稿完了は未確認。文章は「前回の文章」から復元できるよ。'
+      ? 'iPadの送信操作が完了したよ。投稿完了は未確認なので、届いていなければ「前回の文章」で復元してね。'
       : '投稿を確認したよ！次の文章を入力してね。';
     updateStatus(typing && typing.value === '' ? note : '送信操作後も、新しく入力した文章は残したよ。' );
     // Receiver's composer is already empty, so no destructive clear is needed.
@@ -1885,6 +1895,10 @@
       const check=document.createElement('input');check.type='checkbox';check.checked=!!settings.confirm;
       check.addEventListener('change',()=>{settings.confirm=check.checked;saveSettings();});
       confirmLabel.append(check,document.createTextNode(' 送信前に確認する'));toolsPanel.append(confirmLabel);
+      const likelyLabel=document.createElement('label');likelyLabel.className='skr-choice';
+      const likelyCheck=document.createElement('input');likelyCheck.type='checkbox';likelyCheck.checked=settings.autoClearLikely!==false;
+      likelyCheck.addEventListener('change',()=>{settings.autoClearLikely=likelyCheck.checked;saveSettings();});
+      likelyLabel.append(likelyCheck,document.createTextNode(' 送信操作でiPad入力欄が空になったら自動クリア（前回の文章に保存）'));toolsPanel.append(likelyLabel);
       const conversation=document.createElement('section');conversation.className='skr-card skr-reply-wrap';panel.append(conversation);
       const ct=document.createElement('h3');ct.textContent='02 / 返信は同じ会話で確認';conversation.append(ct);
       const chatOpen=button(conversation,'↗  iPadと同じChatGPT会話を開く',()=>{
